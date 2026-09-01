@@ -200,6 +200,7 @@
   </div>
   <div id="time-row">
     <button id="btn-time-prev" class="time-step-btn" aria-label="Previous forecast">‹</button>
+    <button id="btn-time-play" class="time-step-btn" aria-label="Play forecast" title="Play forecast" disabled>▶</button>
     <div id="time-area">
       <div id="time-meta">
         <span id="time-start" class="time-bound">—</span>
@@ -325,6 +326,9 @@ const SK        = window.location.origin
 const CACHE_TTL = 30 * 60 * 1000
 const CONC      = 15
 const LS_PFX    = 'skwx2_'
+const UNIT_PREFERENCES_ACTIVE = '/signalk/v1/unitpreferences/active'
+const UNIT_PREFERENCES_USER = '/signalk/v1/applicationData/user/unitpreferences/1.0.0'
+const UNIT_PREFERENCES_PRESETS = '/signalk/v1/unitpreferences/presets'
 // Écritures localStorage regroupées : un stringify+setItem synchrone par point
 // (~500 par chargement, ~5 Mo) bloque le main thread et dépasse vite le quota.
 const LS_FLUSH_DELAY       = 1000  // ms — coalescer les rafales d'écriture
@@ -342,6 +346,81 @@ let   currentStep  = null        // pas de grille du dernier rendu
 let   currentLayer = 'wind'      // 'wind' | 'temp' | 'cloud'
 let   _heatmapLogged = false
 let   providerInfoReturnFocus = null
+let   forecastPlayTimer = null
+const displayUnits = { speed: 'kn', temperature: 'C', pressure: 'hPa', precipitation: 'mm' }
+
+// Signal K observations remain SI. This only changes the display edge, following the same
+// user-preset-first resolution that Signal K's Unit Preferences admin UI uses.
+function targetUnit(preset, category, aliases = []) {
+  const categories = preset?.categories
+  if (!categories || typeof categories !== 'object') return undefined
+  for (const key of [category, ...aliases]) {
+    const value = categories[key]?.targetUnit
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
+function speedUnit(unit) {
+  const value = unit?.toLowerCase()
+  if (value === 'm/s' || value === 'mps' || value === 'meter/second') return 'm/s'
+  if (value === 'km/h' || value === 'kmh' || value === 'kph') return 'km/h'
+  if (value === 'mph' || value === 'mi/h') return 'mph'
+  return 'kn'
+}
+
+function temperatureUnit(unit) {
+  const value = unit?.toLowerCase()
+  if (value === 'f' || value === '°f' || value === 'fahrenheit') return 'F'
+  if (value === 'k' || value === 'kelvin') return 'K'
+  return 'C'
+}
+
+function pressureUnit(unit) {
+  const value = unit?.toLowerCase()
+  if (value === 'inhg' || value === 'in hg' || value === 'in_hg') return 'inHg'
+  if (value === 'pa' || value === 'pascal') return 'Pa'
+  return 'hPa'
+}
+
+function precipitationUnit(unit) {
+  const value = unit?.toLowerCase()
+  return value === 'in' || value === 'inch' || value === 'inches' ? 'in' : 'mm'
+}
+
+function applyUnitPreset(preset) {
+  displayUnits.speed = speedUnit(targetUnit(preset, 'speed', ['windSpeed']))
+  displayUnits.temperature = temperatureUnit(targetUnit(preset, 'temperature'))
+  displayUnits.pressure = pressureUnit(targetUnit(preset, 'pressure'))
+  displayUnits.precipitation = precipitationUnit(targetUnit(preset, 'precipitation', ['rain', 'volume']))
+}
+
+async function getJsonOrUndefined(path, options) {
+  try {
+    const response = await fetch(`${SK}${path}`, options)
+    return response.ok ? response.json() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function loadDisplayUnits() {
+  const user = await getJsonOrUndefined(UNIT_PREFERENCES_USER, { credentials: 'include' })
+  if (typeof user?.activePreset === 'string' && user.activePreset) {
+    const preset = await getJsonOrUndefined(`${UNIT_PREFERENCES_PRESETS}/${encodeURIComponent(user.activePreset)}`)
+    if (preset) {
+      applyUnitPreset(preset)
+      updateLegend()
+      rerender()
+      return
+    }
+  }
+  const preset = await getJsonOrUndefined(UNIT_PREFERENCES_ACTIVE)
+  if (!preset) return
+  applyUnitPreset(preset)
+  updateLegend()
+  rerender()
+}
 
 // ── Map ───────────────────────────────────────────────────────────────────────
 const map = L.map('map', { zoomControl: true }).setView([48.5, 2.5], 6)
@@ -512,6 +591,30 @@ function cellPixelSize() {
 // ── Wind barb SVG ─────────────────────────────────────────────────────────────
 function kt(mps) { return mps * 1.94384 }
 
+function formatSpeed(mps, digits = 0) {
+  const unit = displayUnits.speed
+  const value = unit === 'm/s' ? mps : unit === 'km/h' ? mps * 3.6 : unit === 'mph' ? mps * 2.236936 : kt(mps)
+  return `${value.toFixed(digits)} ${unit}`
+}
+
+function formatTemperature(kelvin, digits = 1) {
+  const unit = displayUnits.temperature
+  const value = unit === 'F' ? (kelvin - 273.15) * 9 / 5 + 32 : unit === 'K' ? kelvin : kelvin - 273.15
+  return `${value >= 0 && unit !== 'K' ? '+' : ''}${value.toFixed(digits)}°${unit}`
+}
+
+function formatPressure(pascal, digits = 0) {
+  const unit = displayUnits.pressure
+  const value = unit === 'inHg' ? pascal / 3386.389 : unit === 'Pa' ? pascal : pascal / 100
+  return `${value.toFixed(unit === 'inHg' ? 2 : digits)} ${unit}`
+}
+
+function formatPrecipitation(meters, digits = 1) {
+  const unit = displayUnits.precipitation
+  const value = unit === 'in' ? meters * 39.370079 : meters * 1000
+  return `${value.toFixed(digits)} ${unit}`
+}
+
 function barbSVG(speedMps, dirRad) {
   const knots = kt(speedMps)
   const S = 56, C = S / 2, STAFF = 36, BL = 13, SP = 7
@@ -544,7 +647,7 @@ function barbSVG(speedMps, dirRad) {
     style="transform:rotate(${deg}deg);transform-origin:${C}px ${C}px">${parts.join('')}</svg>`
 }
 
-const WIND_GRADIENT_HTML = `<div style="display:flex;height:7px;border-radius:2px;overflow:hidden;margin:3px 0 1px">
+function windGradientHtml() { return `<div style="display:flex;height:7px;border-radius:2px;overflow:hidden;margin:3px 0 1px">
   <div style="flex:1;background:#64b5f6"></div>
   <div style="flex:1;background:#4caf50"></div>
   <div style="flex:1;background:#cddc39"></div>
@@ -553,8 +656,8 @@ const WIND_GRADIENT_HTML = `<div style="display:flex;height:7px;border-radius:2p
   <div style="flex:1;background:#7b1fa2"></div>
 </div>
 <div style="display:flex;justify-content:space-between;font-size:9px;color:#888;margin-bottom:2px">
-  <span>5</span><span>10</span><span>20</span><span>30</span><span>40</span><span>50+ kt</span>
-</div>`
+  <span>${formatSpeed(5 / 1.94384)}</span><span>${formatSpeed(10 / 1.94384)}</span><span>${formatSpeed(20 / 1.94384)}</span><span>${formatSpeed(30 / 1.94384)}</span><span>${formatSpeed(40 / 1.94384)}</span><span>${formatSpeed(50 / 1.94384)}+</span>
+</div>` }
 
 // ── Canvas heatmap ────────────────────────────────────────────────────────────
 // Steps usable for lookup: representable in toFixed(2) → stepI = step*100 integer.
@@ -918,8 +1021,7 @@ function renderMarker(key, lat, lon, data) {
   } else if (currentLayer === 'temp') {
     if (f.outside?.temperature == null) { const l = labelLayers.get(key); if (l) { barbGroup.removeLayer(l); labelLayers.delete(key) } return }
     if (large) {
-      const tempC = f.outside.temperature - 273.15
-      const lbl   = (tempC >= 0 ? '+' : '') + tempC.toFixed(1) + '°'
+      const lbl = formatTemperature(f.outside.temperature)
       const lblHtml = `<div style="font-size:10px;font-weight:700;color:#fff;
         text-shadow:0 0 3px rgba(0,0,0,0.9),0 0 6px rgba(0,0,0,0.6);
         white-space:nowrap;pointer-events:none;line-height:1">${lbl}</div>`
@@ -933,10 +1035,10 @@ function renderMarker(key, lat, lon, data) {
   } else if (currentLayer === 'press') {
     if (f.outside?.pressure == null) { const l = labelLayers.get(key); if (l) { barbGroup.removeLayer(l); labelLayers.delete(key) } return }
     if (large) {
-      const hpa    = Math.round(f.outside.pressure / 100)
+      const pressure = formatPressure(f.outside.pressure)
       const lblHtml = `<div style="font-size:10px;font-weight:700;color:#fff;
         text-shadow:0 0 3px rgba(0,0,0,0.9),0 0 6px rgba(0,0,0,0.6);
-        white-space:nowrap;pointer-events:none;line-height:1">${hpa}</div>`
+        white-space:nowrap;pointer-events:none;line-height:1">${pressure}</div>`
       const lblIcon = L.divIcon({ html: lblHtml, className: 'wind-barb-icon', iconSize: [40, 14], iconAnchor: [20, 7] })
       if (labelLayers.has(key)) { labelLayers.get(key).setIcon(lblIcon) }
       else { labelLayers.set(key, L.marker([lat, lon], { icon: lblIcon, interactive: false }).addTo(barbGroup)) }
@@ -969,14 +1071,14 @@ function buildTooltip(lat, lon, f) {
 
   let html = `<b>${lat.toFixed(2)}°, ${lon.toFixed(2)}°</b><br>${fmtUtc(d)}<hr style="margin:3px 0">`
   if (speed != null && dir != null)
-    html += `${t.tipWind}&nbsp;: <b>${kt(speed).toFixed(0)} ${t.tipKnots}</b> ${t.tipFrom} ${(dir * 180 / Math.PI).toFixed(0)}°<br>`
+    html += `${t.tipWind}&nbsp;: <b>${formatSpeed(speed)}</b> ${t.tipFrom} ${(dir * 180 / Math.PI).toFixed(0)}°<br>`
   if (gust  != null)
-    html += `${t.tipGust}&nbsp;: <b>${kt(gust).toFixed(0)} ${t.tipKnots}</b><br>`
-  if (temp  != null) html += `${t.tipTemp}&nbsp;: ${(temp - 273.15).toFixed(1)}°C &nbsp; `
-  if (pres  != null) html += `${t.tipPressure}&nbsp;: ${(pres / 100).toFixed(0)} hPa<br>`
+    html += `${t.tipGust}&nbsp;: <b>${formatSpeed(gust)}</b><br>`
+  if (temp  != null) html += `${t.tipTemp}&nbsp;: ${formatTemperature(temp)} &nbsp; `
+  if (pres  != null) html += `${t.tipPressure}&nbsp;: ${formatPressure(pres)}<br>`
   if (humid != null) html += `${t.tipHumidity}&nbsp;: ${(humid * 100).toFixed(0)}% &nbsp; `
   if (cloud != null) html += `${t.tipCloud}&nbsp;: ${(cloud * 100).toFixed(0)}%<br>`
-  if (precip != null) html += `${t.tipPrecip}&nbsp;: ${(precip * 1000).toFixed(1)} mm`
+  if (precip != null) html += `${t.tipPrecip}&nbsp;: ${formatPrecipitation(precip)}`
   return html
 }
 
@@ -999,8 +1101,37 @@ function fmtRelative(iso) {
 function selectTimeIndex(index) {
   if (index < 0 || index >= allTimes.length || index === curTimeIdx) return
   curTimeIdx = index
+  if (curTimeIdx === allTimes.length - 1) stopForecastPlayback()
   updateSliderUI()
   rerender()
+}
+
+function forecastPlaying() { return forecastPlayTimer !== null }
+
+function updateForecastPlayButton() {
+  const button = document.getElementById('btn-time-play')
+  const available = allTimes.length > 1
+  button.disabled = !available
+  button.textContent = forecastPlaying() ? '❚❚' : '▶'
+  button.setAttribute('aria-label', forecastPlaying() ? 'Pause forecast' : 'Play forecast')
+  button.title = forecastPlaying() ? 'Pause forecast' : 'Play forecast'
+}
+
+function stopForecastPlayback() {
+  if (forecastPlayTimer !== null) clearInterval(forecastPlayTimer)
+  forecastPlayTimer = null
+  updateForecastPlayButton()
+}
+
+function toggleForecastPlayback() {
+  if (forecastPlaying()) return stopForecastPlayback()
+  if (allTimes.length < 2) return
+  if (curTimeIdx === allTimes.length - 1) selectTimeIndex(0)
+  forecastPlayTimer = setInterval(() => {
+    if (curTimeIdx >= allTimes.length - 1) stopForecastPlayback()
+    else selectTimeIndex(curTimeIdx + 1)
+  }, 750)
+  updateForecastPlayButton()
 }
 
 function renderTimelineTicks() {
@@ -1052,6 +1183,7 @@ function updateSliderUI() {
     start.textContent = '—'
     end.textContent = '—'
     renderTimelineTicks()
+    updateForecastPlayButton()
     return
   }
 
@@ -1068,6 +1200,7 @@ function updateSliderUI() {
   prev.disabled = curTimeIdx === 0
   next.disabled = curTimeIdx === allTimes.length - 1
   renderTimelineTicks()
+  updateForecastPlayButton()
 }
 
 function ingestTimes(data) {
@@ -1460,17 +1593,17 @@ function rerenderAll() {
 function updateLegend() {
   const el = document.getElementById('legend-text')
   if (currentLayer === 'wind') {
-    el.innerHTML = `<b>${t.legendWind}</b>${WIND_GRADIENT_HTML}${t.windDesc}<br><span style="font-size:10px;color:#888">${t.barbDesc}</span>`
+    el.innerHTML = `<b>${t.legendWind}</b>${windGradientHtml()}${t.windDesc}<br><span style="font-size:10px;color:#888">${t.barbDesc}</span>`
   } else if (currentLayer === 'gust') {
-    el.innerHTML = `<b>${t.legendGust}</b>${WIND_GRADIENT_HTML}${t.gustDesc}<br><span style="font-size:10px;color:#888">${t.barbDesc}</span>`
+    el.innerHTML = `<b>${t.legendGust}</b>${windGradientHtml()}${t.gustDesc}<br><span style="font-size:10px;color:#888">${t.barbDesc}</span>`
   } else if (currentLayer === 'temp') {
-    el.innerHTML = `<b>${t.legendTemp}</b>${t.tempDesc}`
+    el.innerHTML = `<b>${t.legendTemp} (${displayUnits.temperature})</b>${t.tempDesc}`
   } else if (currentLayer === 'cloud') {
     el.innerHTML = `<b>${t.legendCloud}</b>${t.cloudDesc}`
   } else if (currentLayer === 'precip') {
-    el.innerHTML = `<b>${t.legendPrecip}</b>${t.precipDesc}`
+    el.innerHTML = `<b>${t.legendPrecip} (${displayUnits.precipitation})</b>${t.precipDesc}`
   } else if (currentLayer === 'press') {
-    el.innerHTML = `<b>${t.legendPress}</b>${t.pressDesc}`
+    el.innerHTML = `<b>${t.legendPress} (${displayUnits.pressure})</b>${t.pressDesc}`
   } else {
     el.innerHTML = `<b>${t.legendPrecip}</b>${t.precipDesc}`
   }
@@ -1495,6 +1628,7 @@ function setControlsDisabled(disabled) {
   document.getElementById('slider-time').disabled = disabled
   document.getElementById('btn-time-prev').disabled = disabled || curTimeIdx === 0
   document.getElementById('btn-time-next').disabled = disabled || curTimeIdx === allTimes.length - 1
+  document.getElementById('btn-time-play').disabled = disabled || allTimes.length < 2
   document.getElementById('btn-provider-info').disabled = disabled
   document.querySelectorAll('.layer-btn').forEach(b => { b.disabled = disabled })
 }
@@ -1547,6 +1681,7 @@ function setLegendVisible(visible) {
   applyI18n()
   purgeLs()
   updateSliderUI()
+  await loadDisplayUnits()
   // Persister les écritures en attente avant que l'onglet ne parte (localStorage = synchrone)
   window.addEventListener('pagehide', lsFlush)
   await centerOnVessel()
@@ -1596,6 +1731,7 @@ function setLegendVisible(visible) {
   })
   document.getElementById('btn-time-prev').addEventListener('click', () => selectTimeIndex(curTimeIdx - 1))
   document.getElementById('btn-time-next').addEventListener('click', () => selectTimeIndex(curTimeIdx + 1))
+  document.getElementById('btn-time-play').addEventListener('click', toggleForecastPlayback)
 
   document.getElementById('sel-source').addEventListener('change', () => {
     // Invalider tout de suite le batch en cours : sans cela, pendant les 350 ms de
@@ -1615,6 +1751,7 @@ function setLegendVisible(visible) {
     labelLayers.clear()
     allTimes = []
     curTimeIdx = 0
+    stopForecastPlayback()
     updateSliderUI()
     refresh()
   })

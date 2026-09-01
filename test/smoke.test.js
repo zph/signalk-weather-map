@@ -35,6 +35,8 @@ const HELPERS = [
   'getCached', 'setCached', 'purgeLs',
   'computeGrid', 'autoStep', 'fetchPoint', 'fetchBatch',
   'renderHeatmap', 'renderMarker', 'doRefresh',
+  'loadDisplayUnits', 'formatSpeed', 'formatTemperature', 'formatPressure', 'formatPrecipitation',
+  'toggleForecastPlayback', 'stopForecastPlayback',
 ]
 
 test('cache and render helpers are defined', () => {
@@ -42,6 +44,15 @@ test('cache and render helpers are defined', () => {
   for (const fn of HELPERS) {
     assert.match(src, new RegExp(`function ${fn}\\s*\\(`), `function ${fn}() defined`)
   }
+})
+
+test('uses Signal K unit preferences and provider-driven forecast playback', () => {
+  const src = inlineScripts()[0]
+  const html = fs.readFileSync(htmlPath, 'utf-8')
+  assert.match(src, /\/signalk\/v1\/unitpreferences\/active/, 'reads the active server preset')
+  assert.match(src, /\/signalk\/v1\/applicationData\/user\/unitpreferences\/1\.0\.0/, 'prefers the user preset')
+  assert.match(html, /id="btn-time-play"/, 'offers forecast playback')
+  assert.match(src, /curTimeIdx >= allTimes\.length - 1/, 'playback stops at the provider data boundary')
 })
 
 test('deferred localStorage writes are flushed at end of lifecycle', () => {

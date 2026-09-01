@@ -13,11 +13,12 @@ A [SignalK](https://signalk.org) webapp that displays meteorological forecast da
 - **Precipitation** — colour-coded intensity (transparent → light blue → blue → purple → red)
 - **Pressure** — colour-coded cells with numeric hPa label (dark blue = storm/low < 960 → cyan → green ≈ 1013 → orange → dark red = anticyclone > 1022)
 - **Automatic grid density** — spacing adapts to zoom level (~40 px between points)
-- **Forecast time slider** — browse all forecast steps provided by the weather source
+- **Forecast timeline** — browse or play through every forecast step returned by the weather source, stopping at the provider's last available step
 - **Multi-provider support** — select any registered SignalK weather provider; set a default with one click
 - **Collapsible panel** — panel and legend collapse to a one-line summary (model + layer) for mobile use; state persisted across sessions
 - **Vessel position** — boat marker oriented to true heading (falls back to north if unavailable)
 - **Client-side cache** — 30-minute localStorage + memory cache; parallel batch fetching (15 concurrent)
+- **Signal K units** — reads the per-user Unit Preferences preset, then the active server preset, for wind, temperature, pressure, and precipitation displays
 - **i18n** — UI language detected from the browser (French and English supported)
 
 ## Requirements
@@ -91,6 +92,13 @@ POST /signalk/v2/api/weather/_providers/_default/:id
 ```
 
 Any provider that implements this API is compatible.
+
+### GRIB and performance
+
+This webapp deliberately does not download or parse GRIB files in the browser. A GRIB-backed
+weather provider should download, decode, and cache its model data on the Signal K server, then
+answer the Weather API from that prepared cache. The map retains a short client cache for redraws
+and panning, but server-side GRIB handling is the path to responsive multi-device and offline use.
 
 ## Development
 
