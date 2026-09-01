@@ -919,12 +919,13 @@ function renderHeatmap() {
 }
 
 // ── Fetch ─────────────────────────────────────────────────────────────────────
-async function fetchGrid(bounds, step, source, signal) {
+async function fetchGrid(bounds, step, source, signal, at) {
   const params = new URLSearchParams({
     west: bounds.getWest().toFixed(4), south: bounds.getSouth().toFixed(4),
     east: bounds.getEast().toFixed(4), north: bounds.getNorth().toFixed(4), step: String(step),
   })
   if (source) params.set('provider', source)
+  if (at) params.set('at', at)
   const response = await fetch(`${SK}/plugins/signalk-weather-map/grid?${params}`, { signal })
   if (!response.ok) throw new Error(`grid endpoint returned HTTP ${response.status}`)
   const payload = await response.json()
@@ -936,6 +937,7 @@ async function fetchGrid(bounds, step, source, signal) {
     server: payload?.timings ?? null,
     serverCache: payload?.cache ?? 'unknown',
     serverTiming: response.headers.get('Server-Timing'),
+    partial: payload?.partial === true,
   }
 }
 
@@ -1088,12 +1090,47 @@ function barbForForecast(forecast, layer) {
 
 let forecastPrewarmHandle = null
 let forecastPrewarmGeneration = 0
+let gridHydrationHandle = null
+let gridHydrationAbort = null
 
 function cancelForecastPrewarm() {
   forecastPrewarmGeneration++
   if (forecastPrewarmHandle !== null && typeof cancelIdleCallback === 'function') cancelIdleCallback(forecastPrewarmHandle)
   else if (forecastPrewarmHandle !== null) clearTimeout(forecastPrewarmHandle)
   forecastPrewarmHandle = null
+}
+
+function cancelGridHydration() {
+  if (gridHydrationHandle !== null) clearTimeout(gridHydrationHandle)
+  gridHydrationHandle = null
+  if (gridHydrationAbort) gridHydrationAbort.abort()
+  gridHydrationAbort = null
+}
+
+// The first grid response contains only the selected instant (~1/120th of a
+// typical GRIB series). Fetch the full per-cell series after first paint, so
+// forecast playback becomes progressively ready without delaying map movement.
+function hydrateGridInBackground(bounds, step, source, points, generation) {
+  cancelGridHydration()
+  gridHydrationHandle = setTimeout(async () => {
+    gridHydrationHandle = null
+    const controller = new AbortController()
+    gridHydrationAbort = controller
+    try {
+      const full = await fetchGrid(bounds, step, source, controller.signal)
+      if (generation !== refreshGen || controller.signal.aborted) return
+      for (const cell of full.points) {
+        if (!Number.isFinite(cell?.lat) || !Number.isFinite(cell?.lon) || !Array.isArray(cell?.data)) continue
+        setCached(cacheKey(cell.lat, cell.lon, source), cell.data)
+      }
+      prewarmForecastFrames(points, source)
+    } catch {
+      // The compact current frame is already visible. A later pan/refresh can
+      // retry hydration without degrading the interactive first paint.
+    } finally {
+      if (gridHydrationAbort === controller) gridHydrationAbort = null
+    }
+  }, 750)
 }
 
 // First paint only creates the selected (normally "now") barbs.  Once the UI
@@ -1626,6 +1663,8 @@ async function doRefresh() {
   const center  = map.getCenter()
   const perf = { startedAt: performance.now(), zoom: map.getZoom(), step, source, cacheCells: 0, missingCells: 0 }
   cancelForecastPrewarm()
+  cancelGridHydration()
+  let hydrateFullGrid = false
 
   document.getElementById('grid-info').textContent = `auto (${step}°)`
 
@@ -1670,12 +1709,13 @@ async function doRefresh() {
       // One request moves the high-cardinality cache and point fan-out to the Signal K host. The
       // browser receives one compact grid response, then commits it in one render pass.
       stageStarted = performance.now()
-      const grid = await fetchGrid(bounds, step, source, abortCtrl.signal)
+      const grid = await fetchGrid(bounds, step, source, abortCtrl.signal, curTime() ?? new Date().toISOString())
       perf.gridFetchMs = +(performance.now() - stageStarted).toFixed(1)
       perf.server = grid.server
       perf.serverCache = grid.serverCache
       perf.serverTiming = grid.serverTiming
       perf.gridPointFailures = grid.server?.pointFailures ?? 0
+      hydrateFullGrid = grid.partial
       if (gen !== refreshGen) return
       stageStarted = performance.now()
       ingestTimeline(grid.times)
@@ -1713,6 +1753,7 @@ async function doRefresh() {
   if (!document.getElementById('provider-info-dialog').hidden) renderProviderInfo()
   prewarmForecastFrames(pts, source)
   finishLoadPerformance(perf)
+  if (hydrateFullGrid) hydrateGridInBackground(bounds, step, source, pts, gen)
 }
 
 // ── Layer availability ────────────────────────────────────────────────────────
@@ -1939,6 +1980,7 @@ function setLegendVisible(visible) {
     refreshGen++
     if (abortCtrl) abortCtrl.abort()
     cancelForecastPrewarm()
+    cancelGridHydration()
     showStatus(null)   // le batch aborté ne nettoiera pas son compteur de chargement
     updateDefaultBtn()
     if (!providerDialog.hidden) renderProviderInfo()

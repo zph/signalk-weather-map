@@ -1,12 +1,15 @@
 'use strict'
 
 const http = require('node:http')
+const { gzip } = require('node:zlib')
+const { promisify } = require('node:util')
 
 const GRID_TTL_MS = 60 * 60 * 1000
 const MAX_GRID_POINTS = 600
 const MAX_GRID_ENTRIES = 16
 const MAX_POINT_ENTRIES = 1_200
 const POINT_CONCURRENCY = 6
+const gzipAsync = promisify(gzip)
 
 function finite(value, min, max) {
   const number = Number(value)
@@ -35,6 +38,44 @@ function forecastTimes(points) {
     }
   }
   return Array.from(times).sort()
+}
+
+function forecastAt(data, at) {
+  if (!Array.isArray(data) || data.length === 0) return undefined
+  const target = Date.parse(at)
+  let best = data[0]
+  let bestDiff = Infinity
+  for (const forecast of data) {
+    const diff = Math.abs(Date.parse(forecast.date) - target)
+    if (diff < bestDiff) { best = forecast; bestDiff = diff }
+  }
+  return best
+}
+
+// First paint only needs the selected forecast instant, while the timeline
+// still needs to know the complete horizon. Keep full series in the server
+// cache and project a compact one-row response when the client asks for `at`.
+function gridAtTime(grid, at) {
+  if (!at) return grid
+  return {
+    ...grid,
+    partial: true,
+    points: grid.points.map(point => {
+      const forecast = forecastAt(point.data, at)
+      return { lat: point.lat, lon: point.lon, data: forecast ? [forecast] : [] }
+    }),
+  }
+}
+
+async function sendGridJson(request, response, grid) {
+  const json = JSON.stringify(grid)
+  response.set('Server-Timing', `grid;dur=${grid.timings.totalMs}`)
+  response.set('Vary', 'Accept-Encoding')
+  if (/\bgzip\b/.test(request.headers['accept-encoding'] || '')) {
+    response.set('Content-Encoding', 'gzip').type('json').send(await gzipAsync(json))
+  } else {
+    response.type('json').send(json)
+  }
 }
 
 function jsonFromSignalK(path) {
@@ -148,14 +189,14 @@ module.exports = function () {
         const north = finite(query.north, -90, 90)
         const step = finite(query.step, 0.01, 10)
         const provider = typeof query.provider === 'string' && query.provider.length <= 200 ? query.provider : ''
+        const at = typeof query.at === 'string' && Number.isFinite(Date.parse(query.at)) ? query.at : undefined
         if (west === undefined || east === undefined || south === undefined || north === undefined || step === undefined || east < west || north < south) {
           response.status(400).json({ error: 'west, south, east, north, and step must describe a valid grid' })
           return
         }
         try {
-          const grid = await cache.grid({ west, south, east, north, step }, provider)
-          response.set('Server-Timing', `grid;dur=${grid.timings.totalMs}`)
-          response.json(grid)
+          const grid = gridAtTime(await cache.grid({ west, south, east, north, step }, provider), at)
+          await sendGridJson(request, response, grid)
         } catch (error) {
           response.status(error instanceof RangeError ? 413 : 502).json({ error: error.message })
         }
@@ -164,4 +205,4 @@ module.exports = function () {
   }
 }
 
-module.exports._private = { createGridCache, forecastTimes, gridPoints }
+module.exports._private = { createGridCache, forecastAt, forecastTimes, gridAtTime, gridPoints }

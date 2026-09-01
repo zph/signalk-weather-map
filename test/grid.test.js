@@ -4,7 +4,7 @@ const { test } = require('node:test')
 const assert = require('node:assert')
 
 const plugin = require('../index.js')
-const { forecastTimes, gridPoints } = plugin._private
+const { forecastAt, forecastTimes, gridAtTime, gridPoints } = plugin._private
 
 test('creates a bounded, antimeridian-safe server grid', () => {
   assert.deepStrictEqual(
@@ -26,4 +26,17 @@ test('reports the complete sorted forecast horizon for a grid', () => {
     '2026-09-02T00:00:00.000Z',
     '2026-09-03T00:00:00.000Z',
   ])
+})
+
+test('projects a compact selected-time grid without losing its timeline', () => {
+  const grid = {
+    times: ['2026-09-01T00:00:00.000Z', '2026-09-01T03:00:00.000Z'],
+    points: [{ lat: 1, lon: 2, data: [{ date: '2026-09-01T00:00:00.000Z' }, { date: '2026-09-01T03:00:00.000Z' }] }],
+  }
+  assert.equal(forecastAt(grid.points[0].data, '2026-09-01T02:00:00.000Z').date, '2026-09-01T03:00:00.000Z')
+  assert.deepStrictEqual(gridAtTime(grid, '2026-09-01T03:00:00.000Z'), {
+    ...grid,
+    partial: true,
+    points: [{ lat: 1, lon: 2, data: [{ date: '2026-09-01T03:00:00.000Z' }] }],
+  })
 })

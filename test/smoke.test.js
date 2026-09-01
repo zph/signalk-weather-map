@@ -86,8 +86,9 @@ test('memoizes selected forecast rows and derived heatmap values', () => {
 test('uses the server-cached grid endpoint before point fallback', () => {
   const src = inlineScripts()[0]
   assert.match(src, /\/plugins\/signalk-weather-map\/grid/, 'requests one server grid')
-  assert.match(src, /await fetchGrid\(bounds, step, source, abortCtrl\.signal\)/, 'loads grid before fallback')
+  assert.match(src, /await fetchGrid\(bounds, step, source, abortCtrl\.signal, curTime\(\) \?\? new Date\(\)\.toISOString\(\)\)/, 'loads compact grid before fallback')
   assert.match(src, /ingestTimeline\(grid\.times\)/, 'uses the backend GRIB horizon for the timeline')
+  assert.match(src, /hydrateGridInBackground/, 'hydrates the full forecast after first paint')
 })
 
 test('prefers a local GRIB provider and preserves partial grid results', () => {
