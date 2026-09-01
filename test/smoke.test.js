@@ -52,7 +52,8 @@ test('uses Signal K unit preferences and provider-driven forecast playback', () 
   assert.match(src, /\/signalk\/v1\/unitpreferences\/active/, 'reads the active server preset')
   assert.match(src, /\/signalk\/v1\/applicationData\/user\/unitpreferences\/1\.0\.0/, 'prefers the user preset')
   assert.match(html, /id="btn-time-play"/, 'offers forecast playback')
-  assert.match(src, /curTimeIdx >= allTimes\.length - 1/, 'playback stops at the provider data boundary')
+  assert.match(src, /position >= allTimes\.length - 1/, 'playback stops at the provider data boundary')
+  assert.match(src, /requestAnimationFrame\(animate\)/, 'interpolates forecast playback between steps')
 })
 
 test('bounds Leaflet and canvas work for a viewport refresh', () => {

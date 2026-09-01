@@ -351,6 +351,8 @@ let   currentLayer = 'wind'      // 'wind' | 'temp' | 'cloud'
 let   _heatmapLogged = false
 let   providerInfoReturnFocus = null
 let   forecastPlayTimer = null
+let   forecastPlayPosition = null
+let   forecastPlayLastOverlayAt = 0
 let   weatherDataGeneration = 0
 const heatValueMemo = new Map()
 const displayUnits = { speed: 'kn', temperature: 'C', pressure: 'hPa', precipitation: 'mm' }
@@ -833,7 +835,8 @@ function renderHeatmap(quality = 'full') {
   // Pre-build the integer-keyed field once per provider, layer, time, and cache generation. A
   // redraw caused by a pan, legend update, or forecast playback then reuses the costly forecast
   // selection and value extraction instead of walking every cached point again.
-  const memoKey = `${weatherDataGeneration}|${provider}|${layer}|${curTime() ?? ''}`
+  const playbackKey = forecastPlayPosition === null ? (curTime() ?? '') : `play:${forecastPlayPosition.toFixed(3)}`
+  const memoKey = `${weatherDataGeneration}|${provider}|${layer}|${playbackKey}`
   let values = heatValueMemo.get(memoKey)
   if (!values) {
     const valCache = new Map()
@@ -1093,7 +1096,17 @@ function forecastSelections(data) {
 
 function pickForecast(data) {
   if (!data || data.length === 0) return null
-  const t = curTime()
+  if (forecastPlayPosition !== null) {
+    const low = Math.floor(forecastPlayPosition)
+    const high = Math.min(low + 1, allTimes.length - 1)
+    const first = forecastAtTime(data, allTimes[low])
+    const second = forecastAtTime(data, allTimes[high])
+    return interpolateForecast(first, second, forecastPlayPosition - low)
+  }
+  return forecastAtTime(data, curTime())
+}
+
+function forecastAtTime(data, t) {
   // Every cell shares the selected forecast time. The derived selection is reused by markers,
   // tooltips, and the heatmap instead of rescanning its whole forecast series.
   const selections = forecastSelections(data)
@@ -1110,6 +1123,38 @@ function pickForecast(data) {
   }
   selections.set(t, best)
   return best
+}
+
+function interpolateNumber(first, second, fraction) {
+  if (first == null) return second
+  if (second == null) return first
+  return first + (second - first) * fraction
+}
+
+function interpolateDirection(first, second, fraction) {
+  if (first == null) return second
+  if (second == null) return first
+  const delta = ((second - first + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+  return first + delta * fraction
+}
+
+function interpolateForecast(first, second, fraction) {
+  if (!first || !second || fraction <= 0) return first || second
+  const lerp = (key, group) => interpolateNumber(first[group]?.[key], second[group]?.[key], fraction)
+  const time = Date.parse(first.date) + (Date.parse(second.date) - Date.parse(first.date)) * fraction
+  return {
+    date: new Date(time).toISOString(),
+    wind: {
+      speedTrue: lerp('speedTrue', 'wind'),
+      gust: lerp('gust', 'wind'),
+      directionTrue: interpolateDirection(first.wind?.directionTrue, second.wind?.directionTrue, fraction),
+    },
+    outside: {
+      temperature: lerp('temperature', 'outside'), pressure: lerp('pressure', 'outside'),
+      cloudCover: lerp('cloudCover', 'outside'), precipitationVolume: lerp('precipitationVolume', 'outside'),
+      relativeHumidity: lerp('relativeHumidity', 'outside'),
+    },
+  }
 }
 
 function barbForForecast(forecast, layer) {
@@ -1343,19 +1388,61 @@ function updateForecastPlayButton() {
 }
 
 function stopForecastPlayback() {
-  if (forecastPlayTimer !== null) clearInterval(forecastPlayTimer)
+  if (forecastPlayTimer !== null) cancelAnimationFrame(forecastPlayTimer)
   forecastPlayTimer = null
+  if (forecastPlayPosition !== null) {
+    curTimeIdx = allTimes.length > 0 ? Math.min(allTimes.length - 1, Math.round(forecastPlayPosition)) : 0
+    forecastPlayPosition = null
+    updateSliderUI()
+    if (allTimes.length > 0) rerender()
+  }
   updateForecastPlayButton()
+}
+
+function renderPlaybackOverlays() {
+  for (const [key] of barbLayers) {
+    const [lat, lon] = latLonFromKey(key)
+    const data = getCached(key)
+    if (data) renderMarker(key, lat, lon, data)
+  }
 }
 
 function toggleForecastPlayback() {
   if (forecastPlaying()) return stopForecastPlayback()
   if (allTimes.length < 2) return
   if (curTimeIdx === allTimes.length - 1) selectTimeIndex(0)
-  forecastPlayTimer = setInterval(() => {
-    if (curTimeIdx >= allTimes.length - 1) stopForecastPlayback()
-    else selectTimeIndex(curTimeIdx + 1)
-  }, 750)
+  cancelHeatmapEnhancement()
+  const startPosition = curTimeIdx
+  const startedAt = performance.now()
+  const STEP_MS = 1_200
+  const animate = now => {
+    const position = startPosition + (now - startedAt) / STEP_MS
+    if (position >= allTimes.length - 1) {
+      forecastPlayPosition = null
+      forecastPlayTimer = null
+      curTimeIdx = allTimes.length - 1
+      updateSliderUI()
+      updateForecastPlayButton()
+      rerender()
+      return
+    }
+    forecastPlayPosition = position
+    const visibleIndex = Math.floor(position)
+    if (visibleIndex !== curTimeIdx) {
+      curTimeIdx = visibleIndex
+      updateSliderUI()
+    }
+    renderHeatmap('preview')
+    // Updating every SVG marker at display rate would reintroduce Leaflet DOM
+    // churn. Four interpolated barb updates per second looks continuous enough.
+    if (now - forecastPlayLastOverlayAt >= 250) {
+      forecastPlayLastOverlayAt = now
+      renderPlaybackOverlays()
+    }
+    forecastPlayTimer = requestAnimationFrame(animate)
+  }
+  forecastPlayLastOverlayAt = 0
+  forecastPlayTimer = requestAnimationFrame(animate)
   updateForecastPlayButton()
 }
 
