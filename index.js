@@ -58,11 +58,15 @@ function createGridCache() {
   const grids = new Map()
   const evict = cache => { while (cache.size > MAX_GRID_ENTRIES) cache.delete(cache.keys().next().value) }
 
-  async function point(lat, lon, provider) {
+  async function point(lat, lon, provider, stats) {
     const key = `${provider || ''}|${lat.toFixed(4)},${lon.toFixed(4)}`
     const now = Date.now()
     const cached = points.get(key)
-    if (cached && now - cached.createdAt < GRID_TTL_MS) return cached.value
+    if (cached && now - cached.createdAt < GRID_TTL_MS) {
+      stats.pointCacheHits++
+      return cached.value
+    }
+    stats.pointCacheMisses++
     const params = new URLSearchParams({ lat: lat.toFixed(4), lon: lon.toFixed(4) })
     if (provider) params.set('provider', provider)
     const value = jsonFromSignalK(`/signalk/v2/api/weather/forecasts/point?${params}`)
@@ -82,26 +86,35 @@ function createGridCache() {
     const key = `${provider || ''}|${bounds.west},${bounds.south},${bounds.east},${bounds.north},${bounds.step}`
     const now = Date.now()
     const cached = grids.get(key)
-    if (cached && now - cached.createdAt < GRID_TTL_MS) return cached.value
+    if (cached && now - cached.createdAt < GRID_TTL_MS) {
+      const value = await cached.value
+      return { ...value, cache: 'grid', timings: { totalMs: Date.now() - now, pointCacheHits: 0, pointCacheMisses: 0 } }
+    }
     const cells = gridPoints(bounds)
     if (!cells) throw new RangeError(`requested grid exceeds ${MAX_GRID_POINTS} cells`)
     let next = 0
     const result = []
+    const stats = { pointCacheHits: 0, pointCacheMisses: 0 }
     async function worker() {
       while (next < cells.length) {
         const [lat, lon] = cells[next++]
-        const data = await point(lat, lon, provider)
+        const data = await point(lat, lon, provider, stats)
         if (Array.isArray(data) && data.length > 0) result.push({ lat, lon, data })
       }
     }
     const value = Promise.all(Array.from({ length: Math.min(POINT_CONCURRENCY, cells.length) }, worker))
-      .then(() => ({ points: result, times: forecastTimes(result), cachedAt: now }))
+      .then(() => ({
+        points: result,
+        times: forecastTimes(result),
+        cachedAt: now,
+        timings: { totalMs: Date.now() - now, ...stats },
+      }))
     grids.set(key, { createdAt: now, value })
     evict(grids)
     try {
       const resolved = await value
       grids.set(key, { createdAt: now, value: resolved })
-      return resolved
+      return { ...resolved, cache: 'miss' }
     } catch (error) {
       grids.delete(key)
       throw error
@@ -134,7 +147,9 @@ module.exports = function () {
           return
         }
         try {
-          response.json(await cache.grid({ west, south, east, north, step }, provider))
+          const grid = await cache.grid({ west, south, east, north, step }, provider)
+          response.set('Server-Timing', `grid;dur=${grid.timings.totalMs}`)
+          response.json(grid)
         } catch (error) {
           response.status(error instanceof RangeError ? 413 : 502).json({ error: error.message })
         }

@@ -354,6 +354,18 @@ let   forecastPlayTimer = null
 let   weatherDataGeneration = 0
 const heatValueMemo = new Map()
 const displayUnits = { speed: 'kn', temperature: 'C', pressure: 'hPa', precipitation: 'mm' }
+// The most recent refresh timings are intentionally inspectable from DevTools as
+// window.__weatherMapPerformance. Keep a short history to compare zoom levels.
+const loadPerformance = []
+
+function finishLoadPerformance(sample) {
+  sample.totalMs = +(performance.now() - sample.startedAt).toFixed(1)
+  delete sample.startedAt
+  loadPerformance.push(sample)
+  if (loadPerformance.length > 20) loadPerformance.shift()
+  window.__weatherMapPerformance = loadPerformance.slice()
+  console.info('[weather-map performance]', sample)
+}
 
 // Signal K observations remain SI. This only changes the display edge, following the same
 // user-preset-first resolution that Signal K's Unit Preferences admin UI uses.
@@ -445,6 +457,41 @@ map.getPane('heatmapPane').style.zIndex = 350
 map.getPane('heatmapPane').style.pointerEvents = 'none'
 let   heatOverlay = null
 const heatCanvas  = document.createElement('canvas')
+
+// Keep the raster as a canvas. L.imageOverlay requires a URL, which previously
+// meant PNG-encoding every redraw with toDataURL() and then having Leaflet decode
+// the same image again. That is both slow and unnecessary.
+const HeatCanvasOverlay = L.Layer.extend({
+  initialize(canvas, bounds) {
+    this._canvas = canvas
+    this._bounds = L.latLngBounds(bounds)
+    this._canvas.className = 'leaflet-image-layer'
+    this._canvas.style.pointerEvents = 'none'
+  },
+  onAdd(map) {
+    this._map = map
+    map.getPane('heatmapPane').appendChild(this._canvas)
+    this._reset()
+  },
+  onRemove() {
+    this._canvas.remove()
+    this._map = null
+  },
+  getEvents() { return { viewreset: this._reset, zoom: this._reset } },
+  setBounds(bounds) {
+    this._bounds = L.latLngBounds(bounds)
+    this._reset()
+    return this
+  },
+  _reset() {
+    if (!this._map) return
+    const northWest = this._map.latLngToLayerPoint(this._bounds.getNorthWest())
+    const southEast = this._map.latLngToLayerPoint(this._bounds.getSouthEast())
+    L.DomUtil.setPosition(this._canvas, northWest)
+    this._canvas.style.width = `${Math.max(1, southEast.x - northWest.x)}px`
+    this._canvas.style.height = `${Math.max(1, southEast.y - northWest.y)}px`
+  },
+})
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
 function lsGet(key) {
@@ -803,8 +850,11 @@ function renderHeatmap() {
 
   // Render at a bounded resolution. On a high-DPI tablet, an uncapped one-quarter canvas can
   // reach millions of pixels, so every progressive fetch result becomes a long main-thread task.
-  const MAX_HEAT_PIXELS = 160_000
-  const scale = Math.min(0.25, Math.sqrt(MAX_HEAT_PIXELS / Math.max(1, size.x * size.y)))
+  // The direct canvas layer below avoids a PNG encode/decode per refresh, so a
+  // half-resolution field remains responsive and removes the visibly grainy
+  // quarter-resolution result. Keep a finite cap for large displays.
+  const MAX_HEAT_PIXELS = 360_000
+  const scale = Math.min(0.5, Math.sqrt(MAX_HEAT_PIXELS / Math.max(1, size.x * size.y)))
   const W = Math.max(1, Math.ceil(size.x * scale))
   const H = Math.max(1, Math.ceil(size.y * scale))
   heatCanvas.width = W; heatCanvas.height = H
@@ -861,12 +911,10 @@ function renderHeatmap() {
   if (!hasData) return
   ctx.putImageData(img, 0, 0)
 
-  // imageOverlay stretches the small canvas to the bounds with smooth browser scaling.
-  const url = heatCanvas.toDataURL()
   if (heatOverlay) {
-    heatOverlay.setUrl(url).setBounds(bounds)
+    heatOverlay.setBounds(bounds)
   } else {
-    heatOverlay = L.imageOverlay(url, bounds, { pane: 'heatmapPane', interactive: false }).addTo(map)
+    heatOverlay = new HeatCanvasOverlay(heatCanvas, bounds).addTo(map)
   }
 }
 
@@ -885,6 +933,9 @@ async function fetchGrid(bounds, step, source, signal) {
     // The server sends the provider's complete common horizon, independently of
     // the order in which individual grid cells are committed to the cache.
     times: Array.isArray(payload?.times) ? payload.times : [],
+    server: payload?.timings ?? null,
+    serverCache: payload?.cache ?? 'unknown',
+    serverTiming: response.headers.get('Server-Timing'),
   }
 }
 
@@ -1568,6 +1619,7 @@ async function doRefresh() {
   const step    = autoStep()
   const source  = document.getElementById('sel-source').value
   const center  = map.getCenter()
+  const perf = { startedAt: performance.now(), zoom: map.getZoom(), step, source, cacheCells: 0, missingCells: 0 }
   cancelForecastPrewarm()
 
   document.getElementById('grid-info').textContent = `auto (${step}°)`
@@ -1591,24 +1643,35 @@ async function doRefresh() {
   pts.sort((a, b) =>
     Math.hypot(a[0]-center.lat, a[1]-center.lng) - Math.hypot(b[0]-center.lat, b[1]-center.lng))
 
+  let stageStarted = performance.now()
   for (const [lat, lon] of pts) {
     const key  = cacheKey(lat, lon, source)
     const data = getCached(key)
-    if (data) { ingestTimes(data); renderMarker(key, lat, lon, data) }
+    if (data) { perf.cacheCells++; ingestTimes(data); renderMarker(key, lat, lon, data) }
   }
+  perf.cacheCommitMs = +(performance.now() - stageStarted).toFixed(1)
 
   // Afficher immédiatement les données déjà en cache avant de fetcher la suite.
+  stageStarted = performance.now()
   renderHeatmap()
+  perf.firstHeatmapMs = +(performance.now() - stageStarted).toFixed(1)
 
   const missing = pts.filter(([lat, lon]) => !getCached(cacheKey(lat, lon, source)))
+  perf.missingCells = missing.length
   if (missing.length > 0) {
     if (abortCtrl) abortCtrl.abort()
     abortCtrl = new AbortController()
     try {
       // One request moves the high-cardinality cache and point fan-out to the Signal K host. The
       // browser receives one compact grid response, then commits it in one render pass.
+      stageStarted = performance.now()
       const grid = await fetchGrid(bounds, step, source, abortCtrl.signal)
+      perf.gridFetchMs = +(performance.now() - stageStarted).toFixed(1)
+      perf.server = grid.server
+      perf.serverCache = grid.serverCache
+      perf.serverTiming = grid.serverTiming
       if (gen !== refreshGen) return
+      stageStarted = performance.now()
       ingestTimeline(grid.times)
       for (const cell of grid.points) {
         if (!Number.isFinite(cell?.lat) || !Number.isFinite(cell?.lon) || !Array.isArray(cell?.data)) continue
@@ -1617,15 +1680,19 @@ async function doRefresh() {
         ingestTimes(cell.data)
         renderMarker(key, cell.lat, cell.lon, cell.data)
       }
+      perf.gridCommitMs = +(performance.now() - stageStarted).toFixed(1)
     } catch (error) {
       // Servers running an older copy of this webapp have no grid endpoint. Keep the compatible
       // point API fallback rather than leaving the map blank during a staged upgrade.
       if (abortCtrl?.signal.aborted) return
+      perf.gridFallback = true
+      stageStarted = performance.now()
       await fetchBatch(missing, source, ({ key, lat, lon, data }) => {
         if (gen !== refreshGen) return
         ingestTimes(data)
         renderMarker(key, lat, lon, data)
       })
+      perf.gridCommitMs = +(performance.now() - stageStarted).toFixed(1)
     }
   }
 
@@ -1633,10 +1700,13 @@ async function doRefresh() {
   lsFlush()
 
   if (gen !== refreshGen) return  // superseded pendant le fetch — ne pas écraser l'état
+  stageStarted = performance.now()
   renderHeatmap()
+  perf.finalHeatmapMs = +(performance.now() - stageStarted).toFixed(1)
   updateLayerButtons()
   if (!document.getElementById('provider-info-dialog').hidden) renderProviderInfo()
   prewarmForecastFrames(pts, source)
+  finishLoadPerformance(perf)
 }
 
 // ── Layer availability ────────────────────────────────────────────────────────

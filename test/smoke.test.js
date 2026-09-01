@@ -59,8 +59,18 @@ test('bounds Leaflet and canvas work for a viewport refresh', () => {
   const src = inlineScripts()[0]
   assert.match(src, /const CONC\s*=\s*6/, 'limits point-forecast concurrency')
   assert.match(src, /const MAX_INTERACTIVE_CELLS\s*=\s*180/, 'caps Leaflet hit targets and markers')
-  assert.match(src, /const MAX_HEAT_PIXELS\s*=\s*160_000/, 'caps heatmap canvas pixels')
+  assert.match(src, /const MAX_HEAT_PIXELS\s*=\s*360_000/, 'caps heatmap canvas pixels')
+  assert.match(src, /const HeatCanvasOverlay = L\.Layer\.extend/, 'keeps the raster in a direct canvas layer')
+  assert.doesNotMatch(src, /heatCanvas\.toDataURL\(\)/, 'avoids PNG encode/decode on every update')
   assert.doesNotMatch(src, /Nearest-neighbour fallback/, 'avoids per-pixel full-grid nearest-neighbor scans')
+})
+
+test('records separate viewport load stages for zoom-level diagnosis', () => {
+  const src = inlineScripts()[0]
+  assert.match(src, /window\.__weatherMapPerformance/, 'exposes a short local timing history')
+  assert.match(src, /perf\.gridFetchMs/, 'records server and transfer wait separately')
+  assert.match(src, /perf\.gridCommitMs/, 'records cache and Leaflet marker work')
+  assert.match(src, /perf\.finalHeatmapMs/, 'records bounded canvas work')
 })
 
 test('memoizes selected forecast rows and derived heatmap values', () => {
