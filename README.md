@@ -12,12 +12,12 @@ A [SignalK](https://signalk.org) webapp that displays meteorological forecast da
 - **Cloudiness** — transparency-based grey overlay (0 % = transparent, 100 % = dark grey)
 - **Precipitation** — colour-coded intensity (transparent → light blue → blue → purple → red)
 - **Pressure** — colour-coded cells with numeric hPa label (dark blue = storm/low < 960 → cyan → green ≈ 1013 → orange → dark red = anticyclone > 1022)
-- **Automatic grid density** — spacing adapts to zoom level (~40 px between points)
+- **Bounded rendering** — adaptive grid density, capped Leaflet markers, and a bounded-resolution canvas keep pan and zoom responsive
 - **Forecast timeline** — browse or play through every forecast step returned by the weather source, stopping at the provider's last available step
 - **Multi-provider support** — select any registered SignalK weather provider; set a default with one click
 - **Collapsible panel** — panel and legend collapse to a one-line summary (model + layer) for mobile use; state persisted across sessions
 - **Vessel position** — boat marker oriented to true heading (falls back to north if unavailable)
-- **Client-side cache** — 30-minute localStorage + memory cache; parallel batch fetching (15 concurrent)
+- **Client-side cache** — 30-minute localStorage + memory cache; bounded batch fetching (6 concurrent)
 - **Signal K units** — reads the per-user Unit Preferences preset, then the active server preset, for wind, temperature, pressure, and precipitation displays
 - **i18n** — UI language detected from the browser (French and English supported)
 

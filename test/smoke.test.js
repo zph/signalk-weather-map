@@ -55,6 +55,14 @@ test('uses Signal K unit preferences and provider-driven forecast playback', () 
   assert.match(src, /curTimeIdx >= allTimes\.length - 1/, 'playback stops at the provider data boundary')
 })
 
+test('bounds Leaflet and canvas work for a viewport refresh', () => {
+  const src = inlineScripts()[0]
+  assert.match(src, /const CONC\s*=\s*6/, 'limits point-forecast concurrency')
+  assert.match(src, /const MAX_INTERACTIVE_CELLS\s*=\s*180/, 'caps Leaflet hit targets and markers')
+  assert.match(src, /const MAX_HEAT_PIXELS\s*=\s*160_000/, 'caps heatmap canvas pixels')
+  assert.doesNotMatch(src, /Nearest-neighbour fallback/, 'avoids per-pixel full-grid nearest-neighbor scans')
+})
+
 test('deferred localStorage writes are flushed at end of lifecycle', () => {
   const src = inlineScripts()[0]
   // After a completed fetch batch…

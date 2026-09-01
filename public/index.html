@@ -324,7 +324,9 @@ function applyI18n() {
 // ── Config ────────────────────────────────────────────────────────────────────
 const SK        = window.location.origin
 const CACHE_TTL = 30 * 60 * 1000
-const CONC      = 15
+// Point forecasts are relatively expensive server-side. A small pool keeps the map responsive
+// without turning a pan into a burst of competing requests.
+const CONC      = 6
 const LS_PFX    = 'skwx2_'
 const UNIT_PREFERENCES_ACTIVE = '/signalk/v1/unitpreferences/active'
 const UNIT_PREFERENCES_USER = '/signalk/v1/applicationData/user/unitpreferences/1.0.0'
@@ -567,19 +569,24 @@ setInterval(() => {
 }, 5 * 60_000)
 
 // ── Auto grid step ────────────────────────────────────────────────────────────
-// Target ~40px between barbs. Steps in degrees.
+// Target ~64px between wind barbs. Leaflet's SVG marker and hit-test cost grows with every cell,
+// so a denser display is slower without making the forecast more precise. Steps in degrees.
 const GRID_STEPS = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10]
 
 function autoStep() {
   const bounds = map.getBounds()
   const size   = map.getSize()
   const degPerPx = (bounds.getEast() - bounds.getWest()) / size.x
-  const raw = degPerPx * 40
+  const raw = degPerPx * 64
   return GRID_STEPS.find(s => s >= raw) ?? 10
 }
 
 // Minimum cell pixel size below which barbs / text labels are hidden.
-const MIN_OVERLAY_PX = 38
+const MIN_OVERLAY_PX = 52
+// Only the nearest cells get Leaflet markers and hit targets. The scalar field is still rendered
+// across the full viewport, while this prevents hundreds of SVG nodes and tooltip rectangles from
+// competing with Leaflet's pan and zoom work.
+const MAX_INTERACTIVE_CELLS = 180
 
 function cellPixelSize() {
   const bounds   = map.getBounds()
@@ -745,7 +752,6 @@ function renderHeatmap() {
   //    Key = latI*100000 + lonI  where latI = round(lat*100), lonI = round(lon*100).
   //    This avoids per-pixel getCached() + pickForecast() + string allocation.
   const valCache  = new Map()
-  const valPoints = []  // flat [latI, lonI, val, ...] for nearest-neighbour fallback
   let providerEntries = 0
   for (const [key, entry] of memCache) {
     if (Date.now() - entry.ts >= CACHE_TTL) continue
@@ -760,7 +766,6 @@ function renderHeatmap() {
     const val = extractValue(f, layer)
     if (val == null) continue
     valCache.set(latI * 100000 + lonI, val)
-    valPoints.push(latI, lonI, val)
   }
   if (valCache.size === 0) {
     if (providerEntries > 0) {
@@ -780,21 +785,12 @@ function renderHeatmap() {
   }
   _heatmapLogged = false  // reset when we DO have data
 
-  // 2. Bounding box of data points + margin (1.5× grid step) for nearest-neighbour guard.
-  let minLatI = Infinity, maxLatI = -Infinity, minLonI = Infinity, maxLonI = -Infinity
-  for (let vi = 0; vi < valPoints.length; vi += 3) {
-    const la = valPoints[vi], lo = valPoints[vi + 1]
-    if (la < minLatI) minLatI = la
-    if (la > maxLatI) maxLatI = la
-    if (lo < minLonI) minLonI = lo
-    if (lo > maxLonI) maxLonI = lo
-  }
-  // nnMargin in integer latI/lonI units (step × 100 × 1.5)
-  const nnMargin = Math.round((currentStep || autoStep()) * 150)
-
-  // 3. Render at ¼ resolution — browser upscales the img smoothly as an imageOverlay.
-  const W = Math.max(1, Math.ceil(size.x / 4))
-  const H = Math.max(1, Math.ceil(size.y / 4))
+  // Render at a bounded resolution. On a high-DPI tablet, an uncapped one-quarter canvas can
+  // reach millions of pixels, so every progressive fetch result becomes a long main-thread task.
+  const MAX_HEAT_PIXELS = 160_000
+  const scale = Math.min(0.25, Math.sqrt(MAX_HEAT_PIXELS / Math.max(1, size.x * size.y)))
+  const W = Math.max(1, Math.ceil(size.x * scale))
+  const H = Math.max(1, Math.ceil(size.y * scale))
   heatCanvas.width = W; heatCanvas.height = H
   const ctx  = heatCanvas.getContext('2d')
   const img  = ctx.createImageData(W, H)
@@ -837,20 +833,6 @@ function renderHeatmap() {
         const val = (1-dx)*(1-dy)*vSW + dx*(1-dy)*vSE + (1-dx)*dy*vNW + dx*dy*vNE
         rgba = valueToRgba(val, layer)
         break
-      }
-
-      // Nearest-neighbour fallback — limité à l'emprise des données + 1.5 pas de grille.
-      // Évite de colorier les zones sans couverture (hors emprise GRIB, etc.).
-      if (!rgba &&
-          latx >= minLatI - nnMargin && latx <= maxLatI + nnMargin &&
-          lonx >= minLonI - nnMargin && lonx <= maxLonI + nnMargin) {
-        let bestVal = null, bestDist2 = Infinity
-        for (let vi = 0; vi < valPoints.length; vi += 3) {
-          const dLa = latx - valPoints[vi], dLo = lonx - valPoints[vi + 1]
-          const d2  = dLa * dLa + dLo * dLo
-          if (d2 < bestDist2) { bestDist2 = d2; bestVal = valPoints[vi + 2] }
-        }
-        if (bestVal !== null) rgba = valueToRgba(bestVal, layer)
       }
 
       if (!rgba) continue
@@ -989,10 +971,16 @@ function pickForecast(data) {
 function renderMarker(key, lat, lon, data) {
   const f = pickForecast(data)
   if (!f) { removeMarker(key); return }
+  const large = cellPixelSize() >= MIN_OVERLAY_PX
+  // Marker work is deliberately bounded. Cached points are traversed center-first during refresh,
+  // so the useful nearby cells retain barbs and hover details while the raster keeps full coverage.
+  if (!large || (!barbLayers.has(key) && barbLayers.size >= MAX_INTERACTIVE_CELLS)) {
+    removeMarker(key)
+    return
+  }
   const tip  = buildTooltip(lat, lon, f)
   const half = (currentStep || 0.25) / 2
   const cellBounds = [[lat - half, lon - half], [lat + half, lon + half]]
-  const large = cellPixelSize() >= MIN_OVERLAY_PX
 
   // Rectangle invisible au pas courant : sert uniquement de cible pour le tooltip.
   const tipStyle = { fillOpacity: 0.01, fillColor: '#fff', stroke: false, weight: 0 }
@@ -1008,43 +996,31 @@ function renderMarker(key, lat, lon, data) {
   // Le canvas gère la couleur de fond pour toutes les couches.
   if (currentLayer === 'wind' || currentLayer === 'gust') {
     if (!f.wind) { const l = labelLayers.get(key); if (l) { barbGroup.removeLayer(l); labelLayers.delete(key) } return }
-    if (large) {
-      const speed = currentLayer === 'wind' ? (f.wind.speedTrue ?? 0) : (f.wind.gust ?? 0)
-      const icon  = L.divIcon({ html: barbSVG(speed, f.wind.directionTrue ?? 0),
-        className: 'wind-barb-icon', iconSize: [56, 56], iconAnchor: [28, 28] })
-      if (labelLayers.has(key)) { labelLayers.get(key).setIcon(icon) }
-      else { labelLayers.set(key, L.marker([lat, lon], { icon, interactive: false }).addTo(barbGroup)) }
-    } else {
-      const l = labelLayers.get(key); if (l) { barbGroup.removeLayer(l); labelLayers.delete(key) }
-    }
+    const speed = currentLayer === 'wind' ? (f.wind.speedTrue ?? 0) : (f.wind.gust ?? 0)
+    const icon  = L.divIcon({ html: barbSVG(speed, f.wind.directionTrue ?? 0),
+      className: 'wind-barb-icon', iconSize: [56, 56], iconAnchor: [28, 28] })
+    if (labelLayers.has(key)) { labelLayers.get(key).setIcon(icon) }
+    else { labelLayers.set(key, L.marker([lat, lon], { icon, interactive: false }).addTo(barbGroup)) }
 
   } else if (currentLayer === 'temp') {
     if (f.outside?.temperature == null) { const l = labelLayers.get(key); if (l) { barbGroup.removeLayer(l); labelLayers.delete(key) } return }
-    if (large) {
-      const lbl = formatTemperature(f.outside.temperature)
-      const lblHtml = `<div style="font-size:10px;font-weight:700;color:#fff;
-        text-shadow:0 0 3px rgba(0,0,0,0.9),0 0 6px rgba(0,0,0,0.6);
-        white-space:nowrap;pointer-events:none;line-height:1">${lbl}</div>`
-      const lblIcon = L.divIcon({ html: lblHtml, className: 'wind-barb-icon', iconSize: [40, 14], iconAnchor: [20, 7] })
-      if (labelLayers.has(key)) { labelLayers.get(key).setIcon(lblIcon) }
-      else { labelLayers.set(key, L.marker([lat, lon], { icon: lblIcon, interactive: false }).addTo(barbGroup)) }
-    } else {
-      const l = labelLayers.get(key); if (l) { barbGroup.removeLayer(l); labelLayers.delete(key) }
-    }
+    const lbl = formatTemperature(f.outside.temperature)
+    const lblHtml = `<div style="font-size:10px;font-weight:700;color:#fff;
+      text-shadow:0 0 3px rgba(0,0,0,0.9),0 0 6px rgba(0,0,0,0.6);
+      white-space:nowrap;pointer-events:none;line-height:1">${lbl}</div>`
+    const lblIcon = L.divIcon({ html: lblHtml, className: 'wind-barb-icon', iconSize: [40, 14], iconAnchor: [20, 7] })
+    if (labelLayers.has(key)) { labelLayers.get(key).setIcon(lblIcon) }
+    else { labelLayers.set(key, L.marker([lat, lon], { icon: lblIcon, interactive: false }).addTo(barbGroup)) }
 
   } else if (currentLayer === 'press') {
     if (f.outside?.pressure == null) { const l = labelLayers.get(key); if (l) { barbGroup.removeLayer(l); labelLayers.delete(key) } return }
-    if (large) {
-      const pressure = formatPressure(f.outside.pressure)
-      const lblHtml = `<div style="font-size:10px;font-weight:700;color:#fff;
-        text-shadow:0 0 3px rgba(0,0,0,0.9),0 0 6px rgba(0,0,0,0.6);
-        white-space:nowrap;pointer-events:none;line-height:1">${pressure}</div>`
-      const lblIcon = L.divIcon({ html: lblHtml, className: 'wind-barb-icon', iconSize: [40, 14], iconAnchor: [20, 7] })
-      if (labelLayers.has(key)) { labelLayers.get(key).setIcon(lblIcon) }
-      else { labelLayers.set(key, L.marker([lat, lon], { icon: lblIcon, interactive: false }).addTo(barbGroup)) }
-    } else {
-      const l = labelLayers.get(key); if (l) { barbGroup.removeLayer(l); labelLayers.delete(key) }
-    }
+    const pressure = formatPressure(f.outside.pressure)
+    const lblHtml = `<div style="font-size:10px;font-weight:700;color:#fff;
+      text-shadow:0 0 3px rgba(0,0,0,0.9),0 0 6px rgba(0,0,0,0.6);
+      white-space:nowrap;pointer-events:none;line-height:1">${pressure}</div>`
+    const lblIcon = L.divIcon({ html: lblHtml, className: 'wind-barb-icon', iconSize: [40, 14], iconAnchor: [20, 7] })
+    if (labelLayers.has(key)) { labelLayers.get(key).setIcon(lblIcon) }
+    else { labelLayers.set(key, L.marker([lat, lon], { icon: lblIcon, interactive: false }).addTo(barbGroup)) }
 
   } else {
     // cloud / precip : canvas gère tout, pas de superposition
