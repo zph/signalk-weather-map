@@ -1,12 +1,133 @@
 'use strict'
 
-module.exports = function (app) {
+const http = require('node:http')
+
+const GRID_TTL_MS = 60 * 60 * 1000
+const MAX_GRID_POINTS = 600
+const MAX_GRID_ENTRIES = 16
+const MAX_POINT_ENTRIES = 1_200
+const POINT_CONCURRENCY = 6
+
+function finite(value, min, max) {
+  const number = Number(value)
+  return Number.isFinite(number) && number >= min && number <= max ? number : undefined
+}
+
+function gridPoints({ west, south, east, north, step }) {
+  const points = []
+  for (let lat = Math.floor(south / step) * step; lat <= north + 1e-9; lat += step) {
+    for (let lon = Math.floor(west / step) * step; lon <= east + 1e-9; lon += step) {
+      points.push([Number(lat.toFixed(4)), Number((((lon + 540) % 360) - 180).toFixed(4))])
+      if (points.length > MAX_GRID_POINTS) return undefined
+    }
+  }
+  return points
+}
+
+function jsonFromSignalK(path) {
+  return new Promise((resolve, reject) => {
+    const request = http.get({ host: '127.0.0.1', port: 3000, path, timeout: 15_000 }, response => {
+      let body = ''
+      response.setEncoding('utf8')
+      response.on('data', chunk => { body += chunk })
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) return reject(new Error(`weather API returned HTTP ${response.statusCode}`))
+        try { resolve(JSON.parse(body)) } catch { reject(new Error('weather API returned invalid JSON')) }
+      })
+    })
+    request.on('timeout', () => request.destroy(new Error('weather API timed out')))
+    request.on('error', reject)
+  })
+}
+
+function createGridCache() {
+  const points = new Map()
+  const grids = new Map()
+  const evict = cache => { while (cache.size > MAX_GRID_ENTRIES) cache.delete(cache.keys().next().value) }
+
+  async function point(lat, lon, provider) {
+    const key = `${provider || ''}|${lat.toFixed(4)},${lon.toFixed(4)}`
+    const now = Date.now()
+    const cached = points.get(key)
+    if (cached && now - cached.createdAt < GRID_TTL_MS) return cached.value
+    const params = new URLSearchParams({ lat: lat.toFixed(4), lon: lon.toFixed(4) })
+    if (provider) params.set('provider', provider)
+    const value = jsonFromSignalK(`/signalk/v2/api/weather/forecasts/point?${params}`)
+    points.set(key, { createdAt: now, value })
+    while (points.size > MAX_POINT_ENTRIES) points.delete(points.keys().next().value)
+    try {
+      const resolved = await value
+      points.set(key, { createdAt: now, value: resolved })
+      return resolved
+    } catch (error) {
+      points.delete(key)
+      throw error
+    }
+  }
+
+  async function grid(bounds, provider) {
+    const key = `${provider || ''}|${bounds.west},${bounds.south},${bounds.east},${bounds.north},${bounds.step}`
+    const now = Date.now()
+    const cached = grids.get(key)
+    if (cached && now - cached.createdAt < GRID_TTL_MS) return cached.value
+    const cells = gridPoints(bounds)
+    if (!cells) throw new RangeError(`requested grid exceeds ${MAX_GRID_POINTS} cells`)
+    let next = 0
+    const result = []
+    async function worker() {
+      while (next < cells.length) {
+        const [lat, lon] = cells[next++]
+        const data = await point(lat, lon, provider)
+        if (Array.isArray(data) && data.length > 0) result.push({ lat, lon, data })
+      }
+    }
+    const value = Promise.all(Array.from({ length: Math.min(POINT_CONCURRENCY, cells.length) }, worker))
+      .then(() => ({ points: result, cachedAt: now }))
+    grids.set(key, { createdAt: now, value })
+    evict(grids)
+    try {
+      const resolved = await value
+      grids.set(key, { createdAt: now, value: resolved })
+      return resolved
+    } catch (error) {
+      grids.delete(key)
+      throw error
+    }
+  }
+
+  return { grid }
+}
+
+module.exports = function () {
+  const cache = createGridCache()
   return {
     id: 'signalk-weather-map',
     name: 'Weather Map',
-    description: 'Weather map webapp — wind barbs, temperature, cloudiness, precipitation and pressure overlay on a Leaflet map',
+    description: 'Weather map webapp with server-cached forecast grids',
     start: function () {},
     stop: function () {},
-    schema: null
+    schema: null,
+    registerWithRouter(router) {
+      router.access('readonly').get('/grid', async (request, response) => {
+        const query = request.query || {}
+        const west = finite(query.west, -360, 360)
+        const east = finite(query.east, -360, 360)
+        const south = finite(query.south, -90, 90)
+        const north = finite(query.north, -90, 90)
+        const step = finite(query.step, 0.01, 10)
+        const provider = typeof query.provider === 'string' && query.provider.length <= 200 ? query.provider : ''
+        if (west === undefined || east === undefined || south === undefined || north === undefined || step === undefined || east < west || north < south) {
+          response.status(400).json({ error: 'west, south, east, north, and step must describe a valid grid' })
+          return
+        }
+        try {
+          response.json(await cache.grid({ west, south, east, north, step }, provider))
+        } catch (error) {
+          response.status(error instanceof RangeError ? 413 : 502).json({ error: error.message })
+        }
+      })
+    },
   }
 }
+
+module.exports._private = { createGridCache, gridPoints }

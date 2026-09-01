@@ -89,6 +89,7 @@ This plugin uses the standard SignalK v2 Weather API:
 GET /signalk/v2/api/weather/forecasts/point?lat=&lon=&provider=<pluginId>
 GET /signalk/v2/api/weather/_providers
 POST /signalk/v2/api/weather/_providers/_default/:id
+GET /plugins/signalk-weather-map/grid?west=&south=&east=&north=&step=&provider=
 ```
 
 Any provider that implements this API is compatible.
@@ -97,8 +98,9 @@ Any provider that implements this API is compatible.
 
 This webapp deliberately does not download or parse GRIB files in the browser. A GRIB-backed
 weather provider should download, decode, and cache its model data on the Signal K server, then
-answer the Weather API from that prepared cache. The map retains a short client cache for redraws
-and panning, but server-side GRIB handling is the path to responsive multi-device and offline use.
+answer the Weather API from that prepared cache. Weather Map's `/grid` route turns the provider's
+point API into one server-cached grid response for the browser, so panning no longer fans out into
+hundreds of browser requests. The map retains a short client cache for redraws and panning.
 
 ## Development
 

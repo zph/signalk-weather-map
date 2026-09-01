@@ -33,7 +33,7 @@ test('inline script parses as JavaScript', () => {
 const HELPERS = [
   'lsGet', 'lsSet', 'lsRemove', 'lsFlush', 'lsEvictForSpace',  // localStorage cache
   'getCached', 'setCached', 'purgeLs',
-  'computeGrid', 'autoStep', 'fetchPoint', 'fetchBatch',
+  'computeGrid', 'autoStep', 'fetchGrid', 'fetchPoint', 'fetchBatch',
   'renderHeatmap', 'renderMarker', 'doRefresh',
   'loadDisplayUnits', 'formatSpeed', 'formatTemperature', 'formatPressure', 'formatPrecipitation',
   'toggleForecastPlayback', 'stopForecastPlayback',
@@ -69,6 +69,12 @@ test('memoizes selected forecast rows and derived heatmap values', () => {
   assert.match(src, /data\._weatherMapSelectedTime === t/, 'reuses the selected forecast row')
   assert.match(src, /weatherDataGeneration\+\+/, 'invalidates derived values when forecast data changes')
   assert.match(src, /const CACHE_TTL = 60 \* 60 \* 1000/, 'retains forecast responses for an hour')
+})
+
+test('uses the server-cached grid endpoint before point fallback', () => {
+  const src = inlineScripts()[0]
+  assert.match(src, /\/plugins\/signalk-weather-map\/grid/, 'requests one server grid')
+  assert.match(src, /await fetchGrid\(bounds, step, source, abortCtrl\.signal\)/, 'loads grid before fallback')
 })
 
 test('deferred localStorage writes are flushed at end of lifecycle', () => {

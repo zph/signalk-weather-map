@@ -871,6 +871,18 @@ function renderHeatmap() {
 }
 
 // ── Fetch ─────────────────────────────────────────────────────────────────────
+async function fetchGrid(bounds, step, source, signal) {
+  const params = new URLSearchParams({
+    west: bounds.getWest().toFixed(4), south: bounds.getSouth().toFixed(4),
+    east: bounds.getEast().toFixed(4), north: bounds.getNorth().toFixed(4), step: String(step),
+  })
+  if (source) params.set('provider', source)
+  const response = await fetch(`${SK}/plugins/signalk-weather-map/grid?${params}`, { signal })
+  if (!response.ok) throw new Error(`grid endpoint returned HTTP ${response.status}`)
+  const payload = await response.json()
+  return Array.isArray(payload?.points) ? payload.points : []
+}
+
 async function fetchPoint(lat, lon, source, signal) {
   const key = cacheKey(lat, lon, source)
   const hit = getCached(key)
@@ -1499,20 +1511,30 @@ async function doRefresh() {
 
   const missing = pts.filter(([lat, lon]) => !getCached(cacheKey(lat, lon, source)))
   if (missing.length > 0) {
-    let lastRender = 0
-    await fetchBatch(missing, source, ({ key, lat, lon, data }) => {
-      if (gen !== refreshGen) return   // une instance plus récente a pris le relais
-      ingestTimes(data)
-      renderMarker(key, lat, lon, data)
-      // Mise à jour progressive : ~3×/s. updateLayerButtons en premier pour basculer
-      // vers une couche disponible si la couche courante n'a pas encore de données.
-      const now = Date.now()
-      if (now - lastRender > 300) {
-        updateLayerButtons()
-        renderHeatmap()
-        lastRender = now
+    if (abortCtrl) abortCtrl.abort()
+    abortCtrl = new AbortController()
+    try {
+      // One request moves the high-cardinality cache and point fan-out to the Signal K host. The
+      // browser receives one compact grid response, then commits it in one render pass.
+      const cells = await fetchGrid(bounds, step, source, abortCtrl.signal)
+      if (gen !== refreshGen) return
+      for (const cell of cells) {
+        if (!Number.isFinite(cell?.lat) || !Number.isFinite(cell?.lon) || !Array.isArray(cell?.data)) continue
+        const key = cacheKey(cell.lat, cell.lon, source)
+        setCached(key, cell.data)
+        ingestTimes(cell.data)
+        renderMarker(key, cell.lat, cell.lon, cell.data)
       }
-    })
+    } catch (error) {
+      // Servers running an older copy of this webapp have no grid endpoint. Keep the compatible
+      // point API fallback rather than leaving the map blank during a staged upgrade.
+      if (abortCtrl?.signal.aborted) return
+      await fetchBatch(missing, source, ({ key, lat, lon, data }) => {
+        if (gen !== refreshGen) return
+        ingestTimes(data)
+        renderMarker(key, lat, lon, data)
+      })
+    }
   }
 
   // Données valides quelle que soit la génération : persister tout de suite
