@@ -54,6 +54,8 @@ test('uses Signal K unit preferences and provider-driven forecast playback', () 
   assert.match(html, /id="btn-time-play"/, 'offers forecast playback')
   assert.match(src, /position >= allTimes\.length - 1/, 'playback stops at the provider data boundary')
   assert.match(src, /requestAnimationFrame\(animate\)/, 'interpolates forecast playback between steps')
+  assert.match(src, /timeSliderWrap\.addEventListener\('pointermove'/, 'supports drag-seeking the full timeline')
+  assert.match(html, /#slider-time \{[^}]*width: 100%/, 'makes the native slider span the timeline')
 })
 
 test('bounds Leaflet and canvas work for a viewport refresh', () => {

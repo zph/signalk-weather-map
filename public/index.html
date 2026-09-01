@@ -139,7 +139,7 @@
     .time-bound { color: #617085; font-size: 10px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .time-bound:last-child { text-align: right; }
     #time-slider-wrap { position: relative; height: 27px; }
-    #slider-time { position: absolute; top: 9px; left: 0; z-index: 2; margin: 0; }
+    #slider-time { position: absolute; top: 9px; left: 0; z-index: 2; width: 100%; margin: 0; touch-action: none; }
     #time-ticks { position: absolute; inset: 0 7px; z-index: 3; pointer-events: none; }
     .time-tick { position: absolute; top: 11px; width: 8px; height: 8px; transform: translateX(-50%); border: 1px solid #3d628f; border-radius: 50%; background: #fff; padding: 0; cursor: pointer; pointer-events: auto; }
     .time-tick.day-a { border-color: #2566c8; background: #dceaff; }
@@ -1369,6 +1369,7 @@ function fmtRelative(iso) {
 }
 
 function selectTimeIndex(index) {
+  if (forecastPlaying()) stopForecastPlayback()
   if (index < 0 || index >= allTimes.length || index === curTimeIdx) return
   curTimeIdx = index
   if (curTimeIdx === allTimes.length - 1) stopForecastPlayback()
@@ -2099,6 +2100,31 @@ function setLegendVisible(visible) {
 
   document.getElementById('slider-time').addEventListener('input', e => {
     selectTimeIndex(parseInt(e.target.value, 10))
+  })
+  // Make every part of the visible timeline seekable, not only the native
+  // range thumb. This also gives touch devices direct click-and-drag seeking.
+  const timeSliderWrap = document.getElementById('time-slider-wrap')
+  let timelinePointerId = null
+  const seekTimeline = event => {
+    const slider = document.getElementById('slider-time')
+    if (slider.disabled || allTimes.length === 0) return
+    const rect = slider.getBoundingClientRect()
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+    selectTimeIndex(Math.round(ratio * (allTimes.length - 1)))
+  }
+  timeSliderWrap.addEventListener('pointerdown', event => {
+    if (event.target.closest('.time-tick')) return
+    timelinePointerId = event.pointerId
+    timeSliderWrap.setPointerCapture(event.pointerId)
+    seekTimeline(event)
+  })
+  timeSliderWrap.addEventListener('pointermove', event => {
+    if (event.pointerId === timelinePointerId) seekTimeline(event)
+  })
+  timeSliderWrap.addEventListener('pointerup', event => {
+    if (event.pointerId !== timelinePointerId) return
+    timelinePointerId = null
+    timeSliderWrap.releasePointerCapture(event.pointerId)
   })
   document.getElementById('btn-time-prev').addEventListener('click', () => selectTimeIndex(curTimeIdx - 1))
   document.getElementById('btn-time-next').addEventListener('click', () => selectTimeIndex(curTimeIdx + 1))
