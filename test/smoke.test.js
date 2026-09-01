@@ -90,6 +90,14 @@ test('uses the server-cached grid endpoint before point fallback', () => {
   assert.match(src, /ingestTimeline\(grid\.times\)/, 'uses the backend GRIB horizon for the timeline')
 })
 
+test('prefers a local GRIB provider and preserves partial grid results', () => {
+  const src = inlineScripts()[0]
+  const server = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf-8')
+  assert.match(src, /preferredGribId/, 'chooses GRIB over a remote default when available')
+  assert.match(server, /stats\.pointFailures\+\+/, 'counts individual provider failures')
+  assert.match(server, /Preserve successful cells/, 'does not fail the entire grid')
+})
+
 test('deferred localStorage writes are flushed at end of lifecycle', () => {
   const src = inlineScripts()[0]
   // After a completed fetch batch…

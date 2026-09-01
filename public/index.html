@@ -1390,14 +1390,19 @@ async function discoverSources(attempt = 1) {
     const sel = document.getElementById('sel-source')
     sel.innerHTML = ''
     defaultProviderId = null
+    let preferredGribId = null
 
     for (const [id, info] of Object.entries(providers)) {
       const opt = document.createElement('option')
       opt.value = id
       opt.textContent = info.name + (info.isDefault ? ' ★' : '')
       if (info.isDefault) { opt.selected = true; defaultProviderId = id }
+      if (!preferredGribId && /grib/i.test(`${id} ${info.name || ''}`)) preferredGribId = id
       sel.appendChild(opt)
     }
+    // Prefer locally cached/decoded GRIB data when available. This changes only
+    // this map's initial selection, never Signal K's server-wide default.
+    if (preferredGribId) sel.value = preferredGribId
 
     if (sel.options.length === 0) {
       showError(t.errNoSource)
@@ -1670,6 +1675,7 @@ async function doRefresh() {
       perf.server = grid.server
       perf.serverCache = grid.serverCache
       perf.serverTiming = grid.serverTiming
+      perf.gridPointFailures = grid.server?.pointFailures ?? 0
       if (gen !== refreshGen) return
       stageStarted = performance.now()
       ingestTimeline(grid.times)

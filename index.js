@@ -88,18 +88,24 @@ function createGridCache() {
     const cached = grids.get(key)
     if (cached && now - cached.createdAt < GRID_TTL_MS) {
       const value = await cached.value
-      return { ...value, cache: 'grid', timings: { totalMs: Date.now() - now, pointCacheHits: 0, pointCacheMisses: 0 } }
+      return { ...value, cache: 'grid', timings: { totalMs: Date.now() - now, pointCacheHits: 0, pointCacheMisses: 0, pointFailures: 0 } }
     }
     const cells = gridPoints(bounds)
     if (!cells) throw new RangeError(`requested grid exceeds ${MAX_GRID_POINTS} cells`)
     let next = 0
     const result = []
-    const stats = { pointCacheHits: 0, pointCacheMisses: 0 }
+    const stats = { pointCacheHits: 0, pointCacheMisses: 0, pointFailures: 0 }
     async function worker() {
       while (next < cells.length) {
         const [lat, lon] = cells[next++]
-        const data = await point(lat, lon, provider, stats)
-        if (Array.isArray(data) && data.length > 0) result.push({ lat, lon, data })
+        try {
+          const data = await point(lat, lon, provider, stats)
+          if (Array.isArray(data) && data.length > 0) result.push({ lat, lon, data })
+        } catch {
+          // Preserve successful cells. One intermittent provider failure must
+          // not make the browser retry the complete viewport point-by-point.
+          stats.pointFailures++
+        }
       }
     }
     const value = Promise.all(Array.from({ length: Math.min(POINT_CONCURRENCY, cells.length) }, worker))
