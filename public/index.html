@@ -364,7 +364,7 @@ function finishLoadPerformance(sample) {
   loadPerformance.push(sample)
   if (loadPerformance.length > 20) loadPerformance.shift()
   window.__weatherMapPerformance = loadPerformance.slice()
-  console.info('[weather-map performance]', sample)
+  console.info(`[weather-map performance] ${JSON.stringify(sample)}`)
 }
 
 // Signal K observations remain SI. This only changes the display edge, following the same
