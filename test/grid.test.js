@@ -37,6 +37,7 @@ test('projects a compact selected-time grid without losing its timeline', () => 
   assert.deepStrictEqual(gridAtTime(grid, '2026-09-01T03:00:00.000Z'), {
     ...grid,
     partial: true,
-    points: [{ lat: 1, lon: 2, data: [{ date: '2026-09-01T03:00:00.000Z' }] }],
+    format: 'weather-map-frame-v1',
+    points: [[1, 2, '2026-09-01T03:00:00.000Z', null, null, null, null, null, null, null, null]],
   })
 })

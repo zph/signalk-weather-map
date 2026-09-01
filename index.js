@@ -60,9 +60,19 @@ function gridAtTime(grid, at) {
   return {
     ...grid,
     partial: true,
+    format: 'weather-map-frame-v1',
     points: grid.points.map(point => {
       const forecast = forecastAt(point.data, at)
-      return { lat: point.lat, lon: point.lon, data: forecast ? [forecast] : [] }
+      // Dense positional rows avoid repeating JSON property names and omit
+      // provider-only fields (waves, descriptions, visibility, etc.) that the
+      // map never draws. The browser expands this only when needed for a tip.
+      return forecast ? [
+        point.lat, point.lon, forecast.date,
+        forecast.wind?.speedTrue ?? null, forecast.wind?.directionTrue ?? null, forecast.wind?.gust ?? null,
+        forecast.outside?.temperature ?? null, forecast.outside?.cloudCover ?? null,
+        forecast.outside?.precipitationVolume ?? null, forecast.outside?.pressure ?? null,
+        forecast.outside?.relativeHumidity ?? null,
+      ] : [point.lat, point.lon]
     }),
   }
 }

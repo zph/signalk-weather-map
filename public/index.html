@@ -457,6 +457,8 @@ map.getPane('heatmapPane').style.zIndex = 350
 map.getPane('heatmapPane').style.pointerEvents = 'none'
 let   heatOverlay = null
 const heatCanvas  = document.createElement('canvas')
+let heatmapEnhancementHandle = null
+let heatmapEnhancementKey = null
 
 // Keep the raster as a canvas. L.imageOverlay requires a URL, which previously
 // meant PNG-encoding every redraw with toDataURL() and then having Leaflet decode
@@ -794,7 +796,34 @@ function valueToRgba(value, layer) {
   return null
 }
 
-function renderHeatmap() {
+function cancelHeatmapEnhancement() {
+  if (heatmapEnhancementHandle !== null && typeof cancelIdleCallback === 'function') cancelIdleCallback(heatmapEnhancementHandle)
+  else if (heatmapEnhancementHandle !== null) clearTimeout(heatmapEnhancementHandle)
+  heatmapEnhancementHandle = null
+  heatmapEnhancementKey = null
+}
+
+function heatmapStateKey() {
+  const bounds = map.getBounds()
+  return `${weatherDataGeneration}|${document.getElementById('sel-source').value}|${currentLayer}|${curTime() ?? ''}|${bounds.toBBoxString()}`
+}
+
+// Paint a coarse field immediately, then replace it with a sharper field when
+// the browser is idle. Pan/zoom/forecast changes cancel stale refinements.
+function enhanceHeatmapInBackground() {
+  cancelHeatmapEnhancement()
+  const key = heatmapStateKey()
+  heatmapEnhancementKey = key
+  const run = () => {
+    heatmapEnhancementHandle = null
+    if (key === heatmapStateKey()) renderHeatmap('full')
+  }
+  heatmapEnhancementHandle = typeof requestIdleCallback === 'function'
+    ? requestIdleCallback(run, { timeout: 500 })
+    : setTimeout(run, 80)
+}
+
+function renderHeatmap(quality = 'full') {
   const bounds   = map.getBounds()
   const size     = map.getSize()
   const provider = document.getElementById('sel-source').value
@@ -853,8 +882,8 @@ function renderHeatmap() {
   // The direct canvas layer below avoids a PNG encode/decode per refresh, so a
   // half-resolution field remains responsive and removes the visibly grainy
   // quarter-resolution result. Keep a finite cap for large displays.
-  const MAX_HEAT_PIXELS = 360_000
-  const scale = Math.min(0.5, Math.sqrt(MAX_HEAT_PIXELS / Math.max(1, size.x * size.y)))
+  const MAX_HEAT_PIXELS = quality === 'preview' ? 90_000 : 360_000
+  const scale = Math.min(quality === 'preview' ? 0.25 : 0.5, Math.sqrt(MAX_HEAT_PIXELS / Math.max(1, size.x * size.y)))
   const W = Math.max(1, Math.ceil(size.x * scale))
   const H = Math.max(1, Math.ceil(size.y * scale))
   heatCanvas.width = W; heatCanvas.height = H
@@ -929,8 +958,17 @@ async function fetchGrid(bounds, step, source, signal, at) {
   const response = await fetch(`${SK}/plugins/signalk-weather-map/grid?${params}`, { signal })
   if (!response.ok) throw new Error(`grid endpoint returned HTTP ${response.status}`)
   const payload = await response.json()
+  const points = payload?.format === 'weather-map-frame-v1'
+    ? payload.points.map(row => {
+      const [lat, lon, date, speed, direction, gust, temperature, cloudCover, precipitationVolume, pressure, relativeHumidity] = row
+      const wind = speed == null && direction == null && gust == null ? undefined : { speedTrue: speed, directionTrue: direction, gust }
+      const outside = temperature == null && cloudCover == null && precipitationVolume == null && pressure == null && relativeHumidity == null
+        ? undefined : { temperature, cloudCover, precipitationVolume, pressure, relativeHumidity }
+      return { lat, lon, data: date ? [{ date, wind, outside }] : [] }
+    })
+    : (Array.isArray(payload?.points) ? payload.points : [])
   return {
-    points: Array.isArray(payload?.points) ? payload.points : [],
+    points,
     // The server sends the provider's complete common horizon, independently of
     // the order in which individual grid cells are committed to the cache.
     times: Array.isArray(payload?.times) ? payload.times : [],
@@ -1664,6 +1702,7 @@ async function doRefresh() {
   const perf = { startedAt: performance.now(), zoom: map.getZoom(), step, source, cacheCells: 0, missingCells: 0 }
   cancelForecastPrewarm()
   cancelGridHydration()
+  cancelHeatmapEnhancement()
   let hydrateFullGrid = false
 
   document.getElementById('grid-info').textContent = `auto (${step}°)`
@@ -1697,7 +1736,7 @@ async function doRefresh() {
 
   // Afficher immédiatement les données déjà en cache avant de fetcher la suite.
   stageStarted = performance.now()
-  renderHeatmap()
+  renderHeatmap('preview')
   perf.firstHeatmapMs = +(performance.now() - stageStarted).toFixed(1)
 
   const missing = pts.filter(([lat, lon]) => !getCached(cacheKey(lat, lon, source)))
@@ -1747,13 +1786,14 @@ async function doRefresh() {
 
   if (gen !== refreshGen) return  // superseded pendant le fetch — ne pas écraser l'état
   stageStarted = performance.now()
-  renderHeatmap()
+  renderHeatmap('preview')
   perf.finalHeatmapMs = +(performance.now() - stageStarted).toFixed(1)
   updateLayerButtons()
   if (!document.getElementById('provider-info-dialog').hidden) renderProviderInfo()
   prewarmForecastFrames(pts, source)
   finishLoadPerformance(perf)
   if (hydrateFullGrid) hydrateGridInBackground(bounds, step, source, pts, gen)
+  enhanceHeatmapInBackground()
 }
 
 // ── Layer availability ────────────────────────────────────────────────────────
@@ -1788,16 +1828,18 @@ function latLonFromKey(key) {
 
 function rerender() {
   cancelForecastPrewarm()
+  cancelHeatmapEnhancement()
   for (const [key] of barbLayers) {
     const [lat, lon] = latLonFromKey(key)
     const data = getCached(key)
     if (data) renderMarker(key, lat, lon, data)
   }
-  renderHeatmap()
+  renderHeatmap('preview')
   const bounds = map.getBounds()
   const source = document.getElementById('sel-source').value
   const step = currentStep || autoStep()
   prewarmForecastFrames(computeGrid(bounds, step), source)
+  enhanceHeatmapInBackground()
 }
 
 function clearHeatmap() {
@@ -1806,6 +1848,7 @@ function clearHeatmap() {
 
 function rerenderAll() {
   cancelForecastPrewarm()
+  cancelHeatmapEnhancement()
   // Re-rendu depuis le cache (utilisé après changement de couche)
   clearHeatmap()
   barbGroup.clearLayers()
@@ -1826,8 +1869,9 @@ function rerenderAll() {
     if (Math.abs(lon - Math.round(lon / step) * step) > eps) continue
     renderMarker(key, lat, lon, entry.data)
   }
-  renderHeatmap()
+  renderHeatmap('preview')
   prewarmForecastFrames(computeGrid(bounds, step), provider)
+  enhanceHeatmapInBackground()
 }
 
 function updateLegend() {

@@ -59,10 +59,11 @@ test('bounds Leaflet and canvas work for a viewport refresh', () => {
   const src = inlineScripts()[0]
   assert.match(src, /const CONC\s*=\s*6/, 'limits point-forecast concurrency')
   assert.match(src, /const MAX_INTERACTIVE_CELLS\s*=\s*180/, 'caps Leaflet hit targets and markers')
-  assert.match(src, /const MAX_HEAT_PIXELS\s*=\s*360_000/, 'caps heatmap canvas pixels')
+  assert.match(src, /quality === 'preview' \? 90_000 : 360_000/, 'uses bounded preview and full heatmap resolutions')
   assert.match(src, /const HeatCanvasOverlay = L\.Layer\.extend/, 'keeps the raster in a direct canvas layer')
   assert.doesNotMatch(src, /heatCanvas\.toDataURL\(\)/, 'avoids PNG encode/decode on every update')
   assert.doesNotMatch(src, /Nearest-neighbour fallback/, 'avoids per-pixel full-grid nearest-neighbor scans')
+  assert.match(src, /function enhanceHeatmapInBackground\(/, 'refines color after an immediate preview')
 })
 
 test('records separate viewport load stages for zoom-level diagnosis', () => {
@@ -89,6 +90,7 @@ test('uses the server-cached grid endpoint before point fallback', () => {
   assert.match(src, /await fetchGrid\(bounds, step, source, abortCtrl\.signal, curTime\(\) \?\? new Date\(\)\.toISOString\(\)\)/, 'loads compact grid before fallback')
   assert.match(src, /ingestTimeline\(grid\.times\)/, 'uses the backend GRIB horizon for the timeline')
   assert.match(src, /hydrateGridInBackground/, 'hydrates the full forecast after first paint')
+  assert.match(src, /weather-map-frame-v1/, 'decodes the compact server frame format')
 })
 
 test('prefers a local GRIB provider and preserves partial grid results', () => {
