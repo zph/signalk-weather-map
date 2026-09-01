@@ -24,6 +24,19 @@ function gridPoints({ west, south, east, north, step }) {
   return points
 }
 
+// The point API returns a complete forecast series for each cell.  Include the
+// union separately so a client can establish its timeline before it has walked
+// and cached every individual cell.
+function forecastTimes(points) {
+  const times = new Set()
+  for (const point of points) {
+    for (const forecast of point.data || []) {
+      if (typeof forecast?.date === 'string' && Number.isFinite(Date.parse(forecast.date))) times.add(forecast.date)
+    }
+  }
+  return Array.from(times).sort()
+}
+
 function jsonFromSignalK(path) {
   return new Promise((resolve, reject) => {
     const request = http.get({ host: '127.0.0.1', port: 3000, path, timeout: 15_000 }, response => {
@@ -82,7 +95,7 @@ function createGridCache() {
       }
     }
     const value = Promise.all(Array.from({ length: Math.min(POINT_CONCURRENCY, cells.length) }, worker))
-      .then(() => ({ points: result, cachedAt: now }))
+      .then(() => ({ points: result, times: forecastTimes(result), cachedAt: now }))
     grids.set(key, { createdAt: now, value })
     evict(grids)
     try {
@@ -130,4 +143,4 @@ module.exports = function () {
   }
 }
 
-module.exports._private = { createGridCache, gridPoints }
+module.exports._private = { createGridCache, forecastTimes, gridPoints }

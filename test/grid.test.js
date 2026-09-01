@@ -4,7 +4,7 @@ const { test } = require('node:test')
 const assert = require('node:assert')
 
 const plugin = require('../index.js')
-const { gridPoints } = plugin._private
+const { forecastTimes, gridPoints } = plugin._private
 
 test('creates a bounded, antimeridian-safe server grid', () => {
   assert.deepStrictEqual(
@@ -15,4 +15,15 @@ test('creates a bounded, antimeridian-safe server grid', () => {
 
 test('refuses an oversized server grid', () => {
   assert.strictEqual(gridPoints({ west: -180, south: -90, east: 180, north: 90, step: 0.01 }), undefined)
+})
+
+test('reports the complete sorted forecast horizon for a grid', () => {
+  assert.deepStrictEqual(forecastTimes([
+    { data: [{ date: '2026-09-03T00:00:00.000Z' }, { date: '2026-09-01T00:00:00.000Z' }] },
+    { data: [{ date: '2026-09-02T00:00:00.000Z' }, { date: 'not-a-date' }] },
+  ]), [
+    '2026-09-01T00:00:00.000Z',
+    '2026-09-02T00:00:00.000Z',
+    '2026-09-03T00:00:00.000Z',
+  ])
 })

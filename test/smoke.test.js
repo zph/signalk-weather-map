@@ -34,7 +34,7 @@ const HELPERS = [
   'lsGet', 'lsSet', 'lsRemove', 'lsFlush', 'lsEvictForSpace',  // localStorage cache
   'getCached', 'setCached', 'purgeLs',
   'computeGrid', 'autoStep', 'fetchGrid', 'fetchPoint', 'fetchBatch',
-  'renderHeatmap', 'renderMarker', 'doRefresh',
+  'renderHeatmap', 'renderMarker', 'doRefresh', 'prewarmForecastFrames', 'ingestTimeline',
   'loadDisplayUnits', 'formatSpeed', 'formatTemperature', 'formatPressure', 'formatPrecipitation',
   'toggleForecastPlayback', 'stopForecastPlayback',
 ]
@@ -66,7 +66,9 @@ test('bounds Leaflet and canvas work for a viewport refresh', () => {
 test('memoizes selected forecast rows and derived heatmap values', () => {
   const src = inlineScripts()[0]
   assert.match(src, /const heatValueMemo = new Map\(\)/, 'keeps derived grid values by render state')
-  assert.match(src, /data\._weatherMapSelectedTime === t/, 'reuses the selected forecast row')
+  assert.match(src, /const forecastSelectionCache = new WeakMap\(\)/, 'reuses rows without persisting derived fields')
+  assert.match(src, /function prewarmForecastFrames\(/, 'prepares future frames only in idle time')
+  assert.match(src, /requestIdleCallback/, 'does not compete with the first paint')
   assert.match(src, /weatherDataGeneration\+\+/, 'invalidates derived values when forecast data changes')
   assert.match(src, /const CACHE_TTL = 60 \* 60 \* 1000/, 'retains forecast responses for an hour')
 })
@@ -75,6 +77,7 @@ test('uses the server-cached grid endpoint before point fallback', () => {
   const src = inlineScripts()[0]
   assert.match(src, /\/plugins\/signalk-weather-map\/grid/, 'requests one server grid')
   assert.match(src, /await fetchGrid\(bounds, step, source, abortCtrl\.signal\)/, 'loads grid before fallback')
+  assert.match(src, /ingestTimeline\(grid\.times\)/, 'uses the backend GRIB horizon for the timeline')
 })
 
 test('deferred localStorage writes are flushed at end of lifecycle', () => {

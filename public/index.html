@@ -880,7 +880,12 @@ async function fetchGrid(bounds, step, source, signal) {
   const response = await fetch(`${SK}/plugins/signalk-weather-map/grid?${params}`, { signal })
   if (!response.ok) throw new Error(`grid endpoint returned HTTP ${response.status}`)
   const payload = await response.json()
-  return Array.isArray(payload?.points) ? payload.points : []
+  return {
+    points: Array.isArray(payload?.points) ? payload.points : [],
+    // The server sends the provider's complete common horizon, independently of
+    // the order in which individual grid cells are committed to the cache.
+    times: Array.isArray(payload?.times) ? payload.times : [],
+  }
 }
 
 async function fetchPoint(lat, lon, source, signal) {
@@ -980,27 +985,109 @@ function computeGrid(bounds, step) {
 // ── Barb rendering ────────────────────────────────────────────────────────────
 function curTime() { return allTimes[curTimeIdx] ?? null }
 
+// Keep derived forecast work out of the provider response objects: those arrays
+// are persisted in localStorage, so enumerable annotations would bloat every
+// cache write. WeakMaps also release the work with the response data.
+const forecastSelectionCache = new WeakMap()
+const forecastBarbCache = new WeakMap()
+
+function forecastSelections(data) {
+  let selections = forecastSelectionCache.get(data)
+  if (!selections) {
+    selections = new Map()
+    forecastSelectionCache.set(data, selections)
+  }
+  return selections
+}
+
 function pickForecast(data) {
   if (!data || data.length === 0) return null
   const t = curTime()
-  // Every cell shares the selected forecast time. Cache the chosen row directly on the response
-  // array so markers, tooltips, and heatmap extraction do not each rescan its whole time series.
-  if (data._weatherMapSelectedTime === t) return data._weatherMapSelectedForecast
+  // Every cell shares the selected forecast time. The derived selection is reused by markers,
+  // tooltips, and the heatmap instead of rescanning its whole forecast series.
+  const selections = forecastSelections(data)
+  if (selections.has(t)) return selections.get(t)
   if (!t) {
-    data._weatherMapSelectedTime = t
-    data._weatherMapSelectedForecast = data[0]
+    selections.set(t, data[0])
     return data[0]
   }
   const target = Date.parse(t)
   let best = null, bestDiff = Infinity
   for (const f of data) {
-    // _ts : timestamp mémoïsé sur l'objet forecast (appelé ~3×/s par entrée du cache)
-    const d = Math.abs((f._ts ?? (f._ts = Date.parse(f.date))) - target)
+    const d = Math.abs(Date.parse(f.date) - target)
     if (d < bestDiff) { bestDiff = d; best = f }
   }
-  data._weatherMapSelectedTime = t
-  data._weatherMapSelectedForecast = best
+  selections.set(t, best)
   return best
+}
+
+function barbForForecast(forecast, layer) {
+  if (!forecast?.wind) return null
+  let barbs = forecastBarbCache.get(forecast)
+  if (!barbs) {
+    barbs = new Map()
+    forecastBarbCache.set(forecast, barbs)
+  }
+  if (barbs.has(layer)) return barbs.get(layer)
+  const speed = layer === 'wind' ? (forecast.wind.speedTrue ?? 0) : (forecast.wind.gust ?? 0)
+  const svg = barbSVG(speed, forecast.wind.directionTrue ?? 0)
+  barbs.set(layer, svg)
+  return svg
+}
+
+let forecastPrewarmHandle = null
+let forecastPrewarmGeneration = 0
+
+function cancelForecastPrewarm() {
+  forecastPrewarmGeneration++
+  if (forecastPrewarmHandle !== null && typeof cancelIdleCallback === 'function') cancelIdleCallback(forecastPrewarmHandle)
+  else if (forecastPrewarmHandle !== null) clearTimeout(forecastPrewarmHandle)
+  forecastPrewarmHandle = null
+}
+
+// First paint only creates the selected (normally "now") barbs.  Once the UI
+// is idle, progressively memoize future selections and SVG strings for the
+// visible grid.  The work is cancelable when a pan, zoom, provider, or layer
+// change makes it irrelevant.
+function prewarmForecastFrames(points, source) {
+  cancelForecastPrewarm()
+  if (allTimes.length < 2) return
+  const generation = forecastPrewarmGeneration
+  const dataSets = points.map(([lat, lon]) => getCached(cacheKey(lat, lon, source))).filter(Boolean)
+  let pointIndex = 0
+  let timeIndex = 0
+  const selected = curTime()
+  const schedule = callback => {
+    forecastPrewarmHandle = typeof requestIdleCallback === 'function'
+      ? requestIdleCallback(callback, { timeout: 750 })
+      : setTimeout(() => callback({ timeRemaining: () => 8, didTimeout: true }), 50)
+  }
+  const work = deadline => {
+    forecastPrewarmHandle = null
+    while (pointIndex < dataSets.length && (deadline.didTimeout || deadline.timeRemaining() > 2)) {
+      const data = dataSets[pointIndex]
+      const time = allTimes[timeIndex++]
+      if (time && time !== selected) {
+        const selections = forecastSelections(data)
+        let forecast = selections.get(time)
+        if (!forecast) {
+          const target = Date.parse(time)
+          let best = null, bestDiff = Infinity
+          for (const candidate of data) {
+            const diff = Math.abs(Date.parse(candidate.date) - target)
+            if (diff < bestDiff) { bestDiff = diff; best = candidate }
+          }
+          selections.set(time, best)
+          forecast = best
+        }
+        barbForForecast(forecast, 'wind')
+        barbForForecast(forecast, 'gust')
+      }
+      if (timeIndex >= allTimes.length) { timeIndex = 0; pointIndex++ }
+    }
+    if (generation === forecastPrewarmGeneration && pointIndex < dataSets.length) schedule(work)
+  }
+  schedule(work)
 }
 
 // Dispatcher — gère les tooltips (rectangle invisible) + barbules/étiquettes.
@@ -1033,8 +1120,7 @@ function renderMarker(key, lat, lon, data) {
   // Le canvas gère la couleur de fond pour toutes les couches.
   if (currentLayer === 'wind' || currentLayer === 'gust') {
     if (!f.wind) { const l = labelLayers.get(key); if (l) { barbGroup.removeLayer(l); labelLayers.delete(key) } return }
-    const speed = currentLayer === 'wind' ? (f.wind.speedTrue ?? 0) : (f.wind.gust ?? 0)
-    const icon  = L.divIcon({ html: barbSVG(speed, f.wind.directionTrue ?? 0),
+    const icon  = L.divIcon({ html: barbForForecast(f, currentLayer),
       className: 'wind-barb-icon', iconSize: [56, 56], iconAnchor: [28, 28] })
     if (labelLayers.has(key)) { labelLayers.get(key).setIcon(icon) }
     else { labelLayers.set(key, L.marker([lat, lon], { icon, interactive: false }).addTo(barbGroup)) }
@@ -1216,9 +1302,9 @@ function updateSliderUI() {
   updateForecastPlayButton()
 }
 
-function ingestTimes(data) {
+function ingestTimeline(times) {
   const set = new Set(allTimes)
-  for (const f of data) if (f.date) set.add(f.date)
+  for (const time of times) if (typeof time === 'string' && Number.isFinite(Date.parse(time))) set.add(time)
   if (set.size === allTimes.length) return false
   // Preserve the currently selected ISO string across re-sorts so that prepending
   // earlier timestamps doesn't silently move the slider to a different point in time.
@@ -1235,6 +1321,10 @@ function ingestTimes(data) {
   updateSliderUI()
   if (!document.getElementById('provider-info-dialog').hidden) renderProviderInfo()
   return true
+}
+
+function ingestTimes(data) {
+  return ingestTimeline(data.map(f => f.date))
 }
 
 // ── Source discovery ──────────────────────────────────────────────────────────
@@ -1478,6 +1568,7 @@ async function doRefresh() {
   const step    = autoStep()
   const source  = document.getElementById('sel-source').value
   const center  = map.getCenter()
+  cancelForecastPrewarm()
 
   document.getElementById('grid-info').textContent = `auto (${step}°)`
 
@@ -1516,9 +1607,10 @@ async function doRefresh() {
     try {
       // One request moves the high-cardinality cache and point fan-out to the Signal K host. The
       // browser receives one compact grid response, then commits it in one render pass.
-      const cells = await fetchGrid(bounds, step, source, abortCtrl.signal)
+      const grid = await fetchGrid(bounds, step, source, abortCtrl.signal)
       if (gen !== refreshGen) return
-      for (const cell of cells) {
+      ingestTimeline(grid.times)
+      for (const cell of grid.points) {
         if (!Number.isFinite(cell?.lat) || !Number.isFinite(cell?.lon) || !Array.isArray(cell?.data)) continue
         const key = cacheKey(cell.lat, cell.lon, source)
         setCached(key, cell.data)
@@ -1544,6 +1636,7 @@ async function doRefresh() {
   renderHeatmap()
   updateLayerButtons()
   if (!document.getElementById('provider-info-dialog').hidden) renderProviderInfo()
+  prewarmForecastFrames(pts, source)
 }
 
 // ── Layer availability ────────────────────────────────────────────────────────
@@ -1577,12 +1670,17 @@ function latLonFromKey(key) {
 }
 
 function rerender() {
+  cancelForecastPrewarm()
   for (const [key] of barbLayers) {
     const [lat, lon] = latLonFromKey(key)
     const data = getCached(key)
     if (data) renderMarker(key, lat, lon, data)
   }
   renderHeatmap()
+  const bounds = map.getBounds()
+  const source = document.getElementById('sel-source').value
+  const step = currentStep || autoStep()
+  prewarmForecastFrames(computeGrid(bounds, step), source)
 }
 
 function clearHeatmap() {
@@ -1590,6 +1688,7 @@ function clearHeatmap() {
 }
 
 function rerenderAll() {
+  cancelForecastPrewarm()
   // Re-rendu depuis le cache (utilisé après changement de couche)
   clearHeatmap()
   barbGroup.clearLayers()
@@ -1611,6 +1710,7 @@ function rerenderAll() {
     renderMarker(key, lat, lon, entry.data)
   }
   renderHeatmap()
+  prewarmForecastFrames(computeGrid(bounds, step), provider)
 }
 
 function updateLegend() {
@@ -1762,6 +1862,7 @@ function setLegendVisible(visible) {
     // ré-ajouteraient des markers de l'ancien provider sur la carte vidée.
     refreshGen++
     if (abortCtrl) abortCtrl.abort()
+    cancelForecastPrewarm()
     showStatus(null)   // le batch aborté ne nettoiera pas son compteur de chargement
     updateDefaultBtn()
     if (!providerDialog.hidden) renderProviderInfo()
