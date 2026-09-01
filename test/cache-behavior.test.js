@@ -54,6 +54,8 @@ function loadCache(storage) {
     setInterval: () => 0,
     clearInterval: () => {},
     memCache: new Map(),
+    weatherDataGeneration: 0,
+    heatValueMemo: new Map(),
   }
   vm.createContext(sandbox)
   vm.runInNewContext(`${constants.join('\n')}\n${section}`, sandbox)

@@ -17,7 +17,7 @@ A [SignalK](https://signalk.org) webapp that displays meteorological forecast da
 - **Multi-provider support** — select any registered SignalK weather provider; set a default with one click
 - **Collapsible panel** — panel and legend collapse to a one-line summary (model + layer) for mobile use; state persisted across sessions
 - **Vessel position** — boat marker oriented to true heading (falls back to north if unavailable)
-- **Client-side cache** — 30-minute localStorage + memory cache; bounded batch fetching (6 concurrent)
+- **Client-side cache** — one-hour localStorage + memory cache with memoized forecast-step and heatmap-value derivation; bounded batch fetching (6 concurrent)
 - **Signal K units** — reads the per-user Unit Preferences preset, then the active server preset, for wind, temperature, pressure, and precipitation displays
 - **i18n** — UI language detected from the browser (French and English supported)
 

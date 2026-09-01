@@ -63,6 +63,14 @@ test('bounds Leaflet and canvas work for a viewport refresh', () => {
   assert.doesNotMatch(src, /Nearest-neighbour fallback/, 'avoids per-pixel full-grid nearest-neighbor scans')
 })
 
+test('memoizes selected forecast rows and derived heatmap values', () => {
+  const src = inlineScripts()[0]
+  assert.match(src, /const heatValueMemo = new Map\(\)/, 'keeps derived grid values by render state')
+  assert.match(src, /data\._weatherMapSelectedTime === t/, 'reuses the selected forecast row')
+  assert.match(src, /weatherDataGeneration\+\+/, 'invalidates derived values when forecast data changes')
+  assert.match(src, /const CACHE_TTL = 60 \* 60 \* 1000/, 'retains forecast responses for an hour')
+})
+
 test('deferred localStorage writes are flushed at end of lifecycle', () => {
   const src = inlineScripts()[0]
   // After a completed fetch batch…

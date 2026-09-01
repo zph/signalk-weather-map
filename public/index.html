@@ -323,7 +323,9 @@ function applyI18n() {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const SK        = window.location.origin
-const CACHE_TTL = 30 * 60 * 1000
+// Forecast model runs are hours apart. Retain prepared point responses for an hour so returning to
+// a recently viewed area does not re-fetch and recompute the same forecast grid.
+const CACHE_TTL = 60 * 60 * 1000
 // Point forecasts are relatively expensive server-side. A small pool keeps the map responsive
 // without turning a pan into a burst of competing requests.
 const CONC      = 6
@@ -349,6 +351,8 @@ let   currentLayer = 'wind'      // 'wind' | 'temp' | 'cloud'
 let   _heatmapLogged = false
 let   providerInfoReturnFocus = null
 let   forecastPlayTimer = null
+let   weatherDataGeneration = 0
+const heatValueMemo = new Map()
 const displayUnits = { speed: 'kn', temperature: 'C', pressure: 'hPa', precipitation: 'mm' }
 
 // Signal K observations remain SI. This only changes the display edge, following the same
@@ -558,6 +562,8 @@ function getCached(key) {
 function setCached(key, data) {
   if (!Array.isArray(data) || data.length === 0) return  // ne pas cacher les résultats vides
   memCache.set(key, { ts: Date.now(), data })
+  weatherDataGeneration++
+  heatValueMemo.clear()
   lsSet(key, data)   // écriture différée — voir lsFlush()
 }
 
@@ -748,25 +754,35 @@ function renderHeatmap() {
   if (!provider) return
   const layer = currentLayer
 
-  // 1. Pre-build integer-keyed value map from memCache (once, before pixel loop).
-  //    Key = latI*100000 + lonI  where latI = round(lat*100), lonI = round(lon*100).
-  //    This avoids per-pixel getCached() + pickForecast() + string allocation.
-  const valCache  = new Map()
-  let providerEntries = 0
-  for (const [key, entry] of memCache) {
-    if (Date.now() - entry.ts >= CACHE_TTL) continue
-    if (!key.startsWith(provider + '|')) continue
-    providerEntries++
-    const coords = key.split('|')[1]
-    const comma  = coords.indexOf(',')
-    const latI   = Math.round(parseFloat(coords) * 100)
-    const lonI   = Math.round(parseFloat(coords.slice(comma + 1)) * 100)
-    const f      = pickForecast(entry.data)
-    if (!f) continue
-    const val = extractValue(f, layer)
-    if (val == null) continue
-    valCache.set(latI * 100000 + lonI, val)
+  // Pre-build the integer-keyed field once per provider, layer, time, and cache generation. A
+  // redraw caused by a pan, legend update, or forecast playback then reuses the costly forecast
+  // selection and value extraction instead of walking every cached point again.
+  const memoKey = `${weatherDataGeneration}|${provider}|${layer}|${curTime() ?? ''}`
+  let values = heatValueMemo.get(memoKey)
+  if (!values) {
+    const valCache = new Map()
+    let providerEntries = 0
+    for (const [key, entry] of memCache) {
+      if (Date.now() - entry.ts >= CACHE_TTL) continue
+      if (!key.startsWith(provider + '|')) continue
+      providerEntries++
+      const coords = key.split('|')[1]
+      const comma  = coords.indexOf(',')
+      const latI   = Math.round(parseFloat(coords) * 100)
+      const lonI   = Math.round(parseFloat(coords.slice(comma + 1)) * 100)
+      const f      = pickForecast(entry.data)
+      if (!f) continue
+      const val = extractValue(f, layer)
+      if (val == null) continue
+      valCache.set(latI * 100000 + lonI, val)
+    }
+    values = { valCache, providerEntries }
+    // The currently relevant field is only a few entries, and clearing keeps a long forecast
+    // playback from retaining every intermediate time step in memory.
+    if (heatValueMemo.size >= 8) heatValueMemo.clear()
+    heatValueMemo.set(memoKey, values)
   }
+  const { valCache, providerEntries } = values
   if (valCache.size === 0) {
     if (providerEntries > 0) {
       console.warn(`renderHeatmap: ${providerEntries} entries for "${provider}" but no value for layer "${layer}"`)
@@ -955,7 +971,14 @@ function curTime() { return allTimes[curTimeIdx] ?? null }
 function pickForecast(data) {
   if (!data || data.length === 0) return null
   const t = curTime()
-  if (!t) return data[0]
+  // Every cell shares the selected forecast time. Cache the chosen row directly on the response
+  // array so markers, tooltips, and heatmap extraction do not each rescan its whole time series.
+  if (data._weatherMapSelectedTime === t) return data._weatherMapSelectedForecast
+  if (!t) {
+    data._weatherMapSelectedTime = t
+    data._weatherMapSelectedForecast = data[0]
+    return data[0]
+  }
   const target = Date.parse(t)
   let best = null, bestDiff = Infinity
   for (const f of data) {
@@ -963,6 +986,8 @@ function pickForecast(data) {
     const d = Math.abs((f._ts ?? (f._ts = Date.parse(f.date))) - target)
     if (d < bestDiff) { bestDiff = d; best = f }
   }
+  data._weatherMapSelectedTime = t
+  data._weatherMapSelectedForecast = best
   return best
 }
 
