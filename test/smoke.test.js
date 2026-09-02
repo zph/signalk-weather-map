@@ -36,6 +36,7 @@ const HELPERS = [
   'computeGrid', 'autoStep', 'fetchGrid', 'fetchPoint', 'fetchBatch',
   'renderHeatmap', 'renderMarker', 'doRefresh', 'prewarmForecastFrames', 'ingestTimeline',
   'loadDisplayUnits', 'formatSpeed', 'formatTemperature', 'formatPressure', 'formatPrecipitation',
+  'currentForForecast', 'currentArrowSVG',
   'toggleForecastPlayback', 'stopForecastPlayback',
 ]
 
@@ -89,11 +90,14 @@ test('memoizes selected forecast rows and derived heatmap values', () => {
 
 test('uses the server-cached grid endpoint before point fallback', () => {
   const src = inlineScripts()[0]
+  const html = fs.readFileSync(htmlPath, 'utf-8')
   assert.match(src, /\/plugins\/signalk-weather-map\/grid/, 'requests one server grid')
   assert.match(src, /await fetchGrid\(bounds, step, source, abortCtrl\.signal, curTime\(\) \?\? new Date\(\)\.toISOString\(\)\)/, 'loads compact grid before fallback')
   assert.match(src, /ingestTimeline\(grid\.times\)/, 'uses the backend GRIB horizon for the timeline')
   assert.match(src, /hydrateGridInBackground/, 'hydrates the full forecast after first paint')
   assert.match(src, /weather-map-frame-v1/, 'decodes the compact server frame format')
+  assert.match(src, /url\.searchParams\.set\('maxCount', '240'\)/, 'requests up to ten days of hourly forecast steps')
+  assert.match(html, /data-layer="current"/, 'offers a surface-current layer')
 })
 
 test('prefers a local GRIB provider and preserves partial grid results', () => {

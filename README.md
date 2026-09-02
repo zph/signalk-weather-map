@@ -1,6 +1,6 @@
 # signalk-weather-map
 
-A [SignalK](https://signalk.org) webapp that displays meteorological forecast data on an interactive map — wind barbs, temperature, cloudiness, precipitation, pressure and gusts, powered by any SignalK weather provider.
+A [SignalK](https://signalk.org) webapp that displays forecast data on an interactive map, including wind barbs, surface-current vectors, temperature, cloudiness, precipitation, pressure, and gusts, powered by any compatible Signal K weather provider.
 
 ![Weather Map screenshot](screenshots/weather-map.png)
 
@@ -8,12 +8,13 @@ A [SignalK](https://signalk.org) webapp that displays meteorological forecast da
 
 - **Wind barbs** — standard meteorological notation (½ bar = 5 kt, bar = 10 kt, pennant = 50 kt)
 - **Gusts** — same barb display based on gust speed
+- **Surface currents:** color-coded speed with arrows pointing toward the modeled current set
 - **Temperature** — colour-coded cells with numeric label (blue → green → yellow → red)
 - **Cloudiness** — transparency-based grey overlay (0 % = transparent, 100 % = dark grey)
 - **Precipitation** — colour-coded intensity (transparent → light blue → blue → purple → red)
 - **Pressure** — colour-coded cells with numeric hPa label (dark blue = storm/low < 960 → cyan → green ≈ 1013 → orange → dark red = anticyclone > 1022)
 - **Bounded rendering** — adaptive grid density, capped Leaflet markers, and a bounded-resolution canvas keep pan and zoom responsive
-- **Forecast timeline** — browse or play through every forecast step returned by the weather source, stopping at the provider's last available step
+- **Forecast timeline:** request up to 240 forecast steps, typically seven to ten days, and browse or play through every step the provider returns
 - **Multi-provider support** — select any registered SignalK weather provider; set a default with one click
 - **Collapsible panel** — panel and legend collapse to a one-line summary (model + layer) for mobile use; state persisted across sessions
 - **Vessel position** — boat marker oriented to true heading (falls back to north if unavailable)
@@ -23,8 +24,8 @@ A [SignalK](https://signalk.org) webapp that displays meteorological forecast da
 
 ## Requirements
 
-- SignalK server with at least one weather provider plugin installed and enabled  
-  (e.g. [signalk-grib-weather-provider](https://github.com/macjl/signalk-grib-weather-provider), Open-Meteo, etc.)
+- Signal K server with at least one weather provider plugin installed and enabled
+  (for example, [signalk-grib-weather-provider](https://github.com/macjl/signalk-grib-weather-provider) or an Open-Meteo provider). Current rendering appears only when the selected provider exposes a standard current field.
 - Node.js ≥ 12
 
 ## Installation
@@ -68,6 +69,7 @@ Or open it from the SignalK dashboard → **Webapps**.
 |---|---|
 | Wind | Barbs based on true wind speed |
 | Gusts | Barbs based on gust speed |
+| Currents | Color-coded surface-current speed with arrows pointing toward the set |
 | Temperature | Colour-coded cell fill with °C label |
 | Cloudiness | Grey transparency proportional to cloud cover |
 | Precipitation | Colour intensity proportional to rain volume |
@@ -75,7 +77,7 @@ Or open it from the SignalK dashboard → **Webapps**.
 
 ### Tooltip
 
-Hover over any cell to see full data: wind speed & direction, gusts, temperature, MSLP, humidity, cloud cover and precipitation.
+Hover over any cell to see full data: wind speed and direction, current speed and set, gusts, temperature, MSLP, humidity, cloud cover, and precipitation.
 
 ### Provider selector
 
@@ -86,7 +88,7 @@ If multiple weather providers are registered, select one from the **Source** dro
 This plugin uses the standard SignalK v2 Weather API:
 
 ```
-GET /signalk/v2/api/weather/forecasts/point?lat=&lon=&provider=<pluginId>
+GET /signalk/v2/api/weather/forecasts/point?lat=&lon=&provider=<pluginId>&maxCount=240
 GET /signalk/v2/api/weather/_providers
 POST /signalk/v2/api/weather/_providers/_default/:id
 GET /plugins/signalk-weather-map/grid?west=&south=&east=&north=&step=&provider=

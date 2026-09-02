@@ -4,7 +4,7 @@ const { test } = require('node:test')
 const assert = require('node:assert')
 
 const plugin = require('../index.js')
-const { forecastAt, forecastTimes, gridAtTime, gridPoints } = plugin._private
+const { currentAt, forecastAt, forecastTimes, gridAtTime, gridPoints } = plugin._private
 
 test('creates a bounded, antimeridian-safe server grid', () => {
   assert.deepStrictEqual(
@@ -38,6 +38,18 @@ test('projects a compact selected-time grid without losing its timeline', () => 
     ...grid,
     partial: true,
     format: 'weather-map-frame-v1',
-    points: [[1, 2, '2026-09-01T03:00:00.000Z', null, null, null, null, null, null, null, null]],
+    points: [[1, 2, '2026-09-01T03:00:00.000Z', null, null, null, null, null, null, null, null, null, null]],
   })
+})
+
+test('reads standard and legacy surface-current shapes', () => {
+  assert.deepStrictEqual(currentAt({ current: { drift: 1.2, set: Math.PI } }), {
+    speed: 1.2,
+    direction: Math.PI,
+  })
+  assert.deepStrictEqual(currentAt({ water: { surfaceCurrentSpeed: 0.4, surfaceCurrentDirection: 1 } }), {
+    speed: 0.4,
+    direction: 1,
+  })
+  assert.deepStrictEqual(currentAt({}), { speed: null, direction: null })
 })

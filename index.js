@@ -9,6 +9,7 @@ const MAX_GRID_POINTS = 600
 const MAX_GRID_ENTRIES = 16
 const MAX_POINT_ENTRIES = 1_200
 const POINT_CONCURRENCY = 6
+const FORECAST_MAX_COUNT = 240
 const gzipAsync = promisify(gzip)
 
 function finite(value, min, max) {
@@ -52,6 +53,17 @@ function forecastAt(data, at) {
   return best
 }
 
+function currentAt(forecast) {
+  const water = forecast?.water
+  const current = forecast?.current ?? forecast?.currents ?? water?.current
+  const speed = current?.drift ?? current?.speed ?? water?.surfaceCurrentSpeed
+  const direction = current?.set ?? current?.direction ?? water?.surfaceCurrentDirection
+  return {
+    speed: typeof speed === 'number' && Number.isFinite(speed) ? speed : null,
+    direction: typeof direction === 'number' && Number.isFinite(direction) ? direction : null,
+  }
+}
+
 // First paint only needs the selected forecast instant, while the timeline
 // still needs to know the complete horizon. Keep full series in the server
 // cache and project a compact one-row response when the client asks for `at`.
@@ -63,6 +75,7 @@ function gridAtTime(grid, at) {
     format: 'weather-map-frame-v1',
     points: grid.points.map(point => {
       const forecast = forecastAt(point.data, at)
+      const current = currentAt(forecast)
       // Dense positional rows avoid repeating JSON property names and omit
       // provider-only fields (waves, descriptions, visibility, etc.) that the
       // map never draws. The browser expands this only when needed for a tip.
@@ -72,6 +85,7 @@ function gridAtTime(grid, at) {
         forecast.outside?.temperature ?? null, forecast.outside?.cloudCover ?? null,
         forecast.outside?.precipitationVolume ?? null, forecast.outside?.pressure ?? null,
         forecast.outside?.relativeHumidity ?? null,
+        current.speed, current.direction,
       ] : [point.lat, point.lon]
     }),
   }
@@ -118,7 +132,9 @@ function createGridCache() {
       return cached.value
     }
     stats.pointCacheMisses++
-    const params = new URLSearchParams({ lat: lat.toFixed(4), lon: lon.toFixed(4) })
+    const params = new URLSearchParams({
+      lat: lat.toFixed(4), lon: lon.toFixed(4), maxCount: String(FORECAST_MAX_COUNT),
+    })
     if (provider) params.set('provider', provider)
     const value = jsonFromSignalK(`/signalk/v2/api/weather/forecasts/point?${params}`)
     points.set(key, { createdAt: now, value })
@@ -215,4 +231,4 @@ module.exports = function () {
   }
 }
 
-module.exports._private = { createGridCache, forecastAt, forecastTimes, gridAtTime, gridPoints }
+module.exports._private = { createGridCache, currentAt, forecastAt, forecastTimes, gridAtTime, gridPoints }

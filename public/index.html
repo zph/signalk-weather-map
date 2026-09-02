@@ -191,6 +191,7 @@
     <div id="layer-selector">
       <button class="layer-btn active" data-layer="wind"   data-i18n="layerWind"></button>
       <button class="layer-btn"        data-layer="gust"   data-i18n="layerGust"></button>
+      <button class="layer-btn"        data-layer="current" data-i18n="layerCurrent"></button>
       <button class="layer-btn"        data-layer="temp"   data-i18n="layerTemp"></button>
       <button class="layer-btn"        data-layer="cloud"  data-i18n="layerCloud"></button>
       <button class="layer-btn"        data-layer="precip" data-i18n="layerPrecip"></button>
@@ -253,7 +254,7 @@ const LANG = (navigator.language || 'en').toLowerCase().startsWith('fr') ? 'fr' 
 
 const I18N = {
   fr: {
-    layerWind: 'Vent', layerGust: 'Rafales', layerTemp: 'Température',
+    layerWind: 'Vent', layerGust: 'Rafales', layerCurrent: 'Courants', layerTemp: 'Température',
     layerCloud: 'Nébulosité', layerPrecip: 'Précipitations', layerPress: 'Pression',
     forecast: 'Prévision', source: 'Source', grid: 'Grille', refresh: 'Rafraîchir',
     setDefault: n => `Définir "${n}" par défaut`,
@@ -263,13 +264,14 @@ const I18N = {
     providerNoData: 'Aucune donnée chargée', providerStepCount: n => `${n} pas`,
     providerUnsupportedNote: '* disponible mais non affichable sur cette carte',
     providerCurrent: 'Courant', providerWaves: 'Vagues', providerSwell: 'Houle', providerTides: 'Marées', providerHumidity: 'Humidité',
-    tipWind: 'Vent', tipGust: 'Rafales', tipKnots: 'nœuds', tipFrom: 'de',
+    tipWind: 'Vent', tipGust: 'Rafales', tipCurrent: 'Courant', tipKnots: 'nœuds', tipFrom: 'de', tipToward: 'vers',
     tipTemp: 'Temp', tipPressure: 'MSLP', tipHumidity: 'Humidité',
     tipCloud: 'Nuages', tipPrecip: 'Précip.',
-    legendWind: 'Vent', legendGust: 'Rafales',
+    legendWind: 'Vent', legendGust: 'Rafales', legendCurrent: 'Courants de surface',
     legendTemp: 'Température', legendCloud: 'Nébulosité', legendPrecip: 'Précipitations', legendPress: 'Pression',
     windDesc:   'Bleu → Vert → Jaune → Orange → Rouge selon la vitesse<br>Barbules affichées si zoom suffisant',
     gustDesc:   'Même échelle — basé sur la rafale maximale<br>Barbules affichées si zoom suffisant',
+    currentDesc: 'Vitesse modélisée et direction du courant de surface<br>Données côtières indicatives, pas pour la navigation',
     barbDesc:   '½ trait = 5 nœuds &nbsp;|&nbsp; trait = 10 nœuds<br>fanion = 50 nœuds &nbsp;|&nbsp; ○ = calme (&lt;3 nœuds)',
     tempDesc:   'Bleu = froid &nbsp;|&nbsp; Vert = tempéré &nbsp;|&nbsp; Rouge = chaud',
     cloudDesc:  'Transparent = ciel clair &nbsp;|&nbsp; Gris foncé = couvert à 100%',
@@ -283,7 +285,7 @@ const I18N = {
     now: 'maintenant', ago: h => `il y a ${h}h`, inN: h => `dans ${h}h`,
   },
   en: {
-    layerWind: 'Wind', layerGust: 'Gusts', layerTemp: 'Temperature',
+    layerWind: 'Wind', layerGust: 'Gusts', layerCurrent: 'Currents', layerTemp: 'Temperature',
     layerCloud: 'Cloudiness', layerPrecip: 'Precipitation', layerPress: 'Pressure',
     forecast: 'Forecast', source: 'Source', grid: 'Grid', refresh: 'Refresh',
     setDefault: n => `Set "${n}" as default`,
@@ -293,13 +295,14 @@ const I18N = {
     providerNoData: 'No data loaded', providerStepCount: n => `${n} steps`,
     providerUnsupportedNote: '* available but not displayable on this map',
     providerCurrent: 'Current', providerWaves: 'Waves', providerSwell: 'Swell', providerTides: 'Tides', providerHumidity: 'Humidity',
-    tipWind: 'Wind', tipGust: 'Gusts', tipKnots: 'kt', tipFrom: 'from',
+    tipWind: 'Wind', tipGust: 'Gusts', tipCurrent: 'Current', tipKnots: 'kt', tipFrom: 'from', tipToward: 'toward',
     tipTemp: 'Temp', tipPressure: 'MSLP', tipHumidity: 'Humidity',
     tipCloud: 'Cloud', tipPrecip: 'Precip.',
-    legendWind: 'Wind', legendGust: 'Gusts',
+    legendWind: 'Wind', legendGust: 'Gusts', legendCurrent: 'Surface currents',
     legendTemp: 'Temperature', legendCloud: 'Cloudiness', legendPrecip: 'Precipitation', legendPress: 'Pressure',
     windDesc:   'Blue → Green → Yellow → Orange → Red by speed<br>Barbs shown when zoomed in',
     gustDesc:   'Same scale — based on maximum gust<br>Barbs shown when zoomed in',
+    currentDesc: 'Modeled surface-current speed and set<br>Coastal data is advisory and not for navigation',
     barbDesc:   '½ bar = 5 kt &nbsp;|&nbsp; bar = 10 kt<br>pennant = 50 kt &nbsp;|&nbsp; ○ = calm (&lt;3 kt)',
     tempDesc:   'Blue = cold &nbsp;|&nbsp; Green = temperate &nbsp;|&nbsp; Red = hot',
     cloudDesc:  'Transparent = clear sky &nbsp;|&nbsp; Dark grey = overcast',
@@ -347,7 +350,7 @@ let   curTimeIdx = 0
 let   abortCtrl  = null
 let   defaultProviderId = null   // provider actuellement par défaut côté SignalK
 let   currentStep  = null        // pas de grille du dernier rendu
-let   currentLayer = 'wind'      // 'wind' | 'temp' | 'cloud'
+let   currentLayer = 'wind'
 let   _heatmapLogged = false
 let   providerInfoReturnFocus = null
 let   forecastPlayTimer = null
@@ -711,6 +714,19 @@ function barbSVG(speedMps, dirRad) {
     style="transform:rotate(${deg}deg);transform-origin:${C}px ${C}px">${parts.join('')}</svg>`
 }
 
+function currentArrowSVG(speedMps, dirRad) {
+  const S = 56, C = S / 2
+  const deg = (dirRad * 180 / Math.PI).toFixed(1)
+  const label = formatSpeed(speedMps, 1)
+  return `<svg width="${S}" height="${S}" viewBox="0 0 ${S} ${S}">
+    <g style="transform:rotate(${deg}deg);transform-origin:${C}px ${C}px">
+      <line x1="${C}" y1="43" x2="${C}" y2="11" stroke="#163d52" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M20 19 L28 10 L36 19" fill="none" stroke="#163d52" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="28" y="54" text-anchor="middle" font-size="8" font-weight="700" fill="#163d52" stroke="#fff" stroke-width="2" paint-order="stroke">${label}</text>
+  </svg>`
+}
+
 function windGradientHtml() { return `<div style="display:flex;height:7px;border-radius:2px;overflow:hidden;margin:3px 0 1px">
   <div style="flex:1;background:#64b5f6"></div>
   <div style="flex:1;background:#4caf50"></div>
@@ -722,6 +738,26 @@ function windGradientHtml() { return `<div style="display:flex;height:7px;border
 <div style="display:flex;justify-content:space-between;font-size:9px;color:#888;margin-bottom:2px">
   <span>${formatSpeed(5 / 1.94384)}</span><span>${formatSpeed(10 / 1.94384)}</span><span>${formatSpeed(20 / 1.94384)}</span><span>${formatSpeed(30 / 1.94384)}</span><span>${formatSpeed(40 / 1.94384)}</span><span>${formatSpeed(50 / 1.94384)}+</span>
 </div>` }
+
+function currentGradientHtml() { return `<div style="display:flex;height:7px;border-radius:2px;overflow:hidden;margin:3px 0 1px">
+  <div style="flex:1;background:#338caf"></div>
+  <div style="flex:1;background:#2eb89e"></div>
+  <div style="flex:1;background:#c7c733"></div>
+  <div style="flex:1;background:#ef7a29"></div>
+  <div style="flex:1;background:#d12e33"></div>
+</div>
+<div style="display:flex;justify-content:space-between;font-size:9px;color:#888;margin-bottom:2px">
+  <span>${formatSpeed(0, 1)}</span><span>${formatSpeed(0.5 / 1.94384, 1)}</span><span>${formatSpeed(1 / 1.94384, 1)}</span><span>${formatSpeed(2 / 1.94384, 1)}</span><span>${formatSpeed(4 / 1.94384, 1)}+</span>
+</div>` }
+
+function currentForForecast(forecast) {
+  const water = forecast?.water
+  const current = forecast?.current ?? forecast?.currents ?? water?.current
+  return {
+    speed: current?.drift ?? current?.speed ?? water?.surfaceCurrentSpeed ?? null,
+    direction: current?.set ?? current?.direction ?? water?.surfaceCurrentDirection ?? null,
+  }
+}
 
 // ── Canvas heatmap ────────────────────────────────────────────────────────────
 // Steps usable for lookup: representable in toFixed(2) → stepI = step*100 integer.
@@ -741,6 +777,7 @@ function extractValue(f, layer) {
   if (!f) return null
   if (layer === 'wind')   return f.wind?.speedTrue ?? null
   if (layer === 'gust')   return f.wind?.gust       ?? null
+  if (layer === 'current') return currentForForecast(f).speed
   if (layer === 'temp')   return f.outside?.temperature ?? null
   if (layer === 'cloud')  return f.outside?.cloudCover  ?? null
   if (layer === 'precip') { const v = f.outside?.precipitationVolume; return v == null ? null : v * 1000 }
@@ -762,6 +799,14 @@ function valueToRgba(value, layer) {
     if (k < 40) return [244, 67, 54,166]
     if (k < 50) return [183, 28, 28,179]
     return             [123, 31,162,192]
+  }
+  if (layer === 'current') {
+    const k = value * 1.94384
+    if (k < 0.5) return [ 51,140,175, 51]
+    if (k < 1)   return [ 46,184,158,102]
+    if (k < 2)   return [199,199, 51,140]
+    if (k < 3)   return [239,122, 41,153]
+    return              [209, 46, 51,166]
   }
   if (layer === 'temp') {
     const t = value - 273.15
@@ -963,11 +1008,12 @@ async function fetchGrid(bounds, step, source, signal, at) {
   const payload = await response.json()
   const points = payload?.format === 'weather-map-frame-v1'
     ? payload.points.map(row => {
-      const [lat, lon, date, speed, direction, gust, temperature, cloudCover, precipitationVolume, pressure, relativeHumidity] = row
+      const [lat, lon, date, speed, direction, gust, temperature, cloudCover, precipitationVolume, pressure, relativeHumidity, currentSpeed, currentDirection] = row
       const wind = speed == null && direction == null && gust == null ? undefined : { speedTrue: speed, directionTrue: direction, gust }
+      const current = currentSpeed == null && currentDirection == null ? undefined : { drift: currentSpeed, set: currentDirection }
       const outside = temperature == null && cloudCover == null && precipitationVolume == null && pressure == null && relativeHumidity == null
         ? undefined : { temperature, cloudCover, precipitationVolume, pressure, relativeHumidity }
-      return { lat, lon, data: date ? [{ date, wind, outside }] : [] }
+      return { lat, lon, data: date ? [{ date, wind, current, outside }] : [] }
     })
     : (Array.isArray(payload?.points) ? payload.points : [])
   return {
@@ -990,6 +1036,7 @@ async function fetchPoint(lat, lon, source, signal) {
   const url = new URL(`${SK}/signalk/v2/api/weather/forecasts/point`)
   url.searchParams.set('lat', lat.toFixed(4))
   url.searchParams.set('lon', lon.toFixed(4))
+  url.searchParams.set('maxCount', '240')
   if (source) url.searchParams.set('provider', source)
 
   const MAX_ATTEMPTS = 3
@@ -1142,12 +1189,18 @@ function interpolateForecast(first, second, fraction) {
   if (!first || !second || fraction <= 0) return first || second
   const lerp = (key, group) => interpolateNumber(first[group]?.[key], second[group]?.[key], fraction)
   const time = Date.parse(first.date) + (Date.parse(second.date) - Date.parse(first.date)) * fraction
+  const firstCurrent = currentForForecast(first)
+  const secondCurrent = currentForForecast(second)
   return {
     date: new Date(time).toISOString(),
     wind: {
       speedTrue: lerp('speedTrue', 'wind'),
       gust: lerp('gust', 'wind'),
       directionTrue: interpolateDirection(first.wind?.directionTrue, second.wind?.directionTrue, fraction),
+    },
+    current: {
+      drift: interpolateNumber(firstCurrent.speed, secondCurrent.speed, fraction),
+      set: interpolateDirection(firstCurrent.direction, secondCurrent.direction, fraction),
     },
     outside: {
       temperature: lerp('temperature', 'outside'), pressure: lerp('pressure', 'outside'),
@@ -1296,6 +1349,17 @@ function renderMarker(key, lat, lon, data) {
     if (labelLayers.has(key)) { labelLayers.get(key).setIcon(icon) }
     else { labelLayers.set(key, L.marker([lat, lon], { icon, interactive: false }).addTo(barbGroup)) }
 
+  } else if (currentLayer === 'current') {
+    const current = currentForForecast(f)
+    if (current.speed == null || current.direction == null) {
+      const layer = labelLayers.get(key); if (layer) { barbGroup.removeLayer(layer); labelLayers.delete(key) }
+      return
+    }
+    const icon = L.divIcon({ html: currentArrowSVG(current.speed, current.direction),
+      className: 'wind-barb-icon', iconSize: [56, 56], iconAnchor: [28, 28] })
+    if (labelLayers.has(key)) { labelLayers.get(key).setIcon(icon) }
+    else { labelLayers.set(key, L.marker([lat, lon], { icon, interactive: false }).addTo(barbGroup)) }
+
   } else if (currentLayer === 'temp') {
     if (f.outside?.temperature == null) { const l = labelLayers.get(key); if (l) { barbGroup.removeLayer(l); labelLayers.delete(key) } return }
     const lbl = formatTemperature(f.outside.temperature)
@@ -1333,6 +1397,7 @@ function buildTooltip(lat, lon, f) {
   const speed  = f.wind?.speedTrue
   const dir    = f.wind?.directionTrue
   const gust   = f.wind?.gust
+  const current = currentForForecast(f)
   const temp   = f.outside?.temperature
   const pres   = f.outside?.pressure
   const humid  = f.outside?.relativeHumidity
@@ -1344,6 +1409,11 @@ function buildTooltip(lat, lon, f) {
     html += `${t.tipWind}&nbsp;: <b>${formatSpeed(speed)}</b> ${t.tipFrom} ${(dir * 180 / Math.PI).toFixed(0)}°<br>`
   if (gust  != null)
     html += `${t.tipGust}&nbsp;: <b>${formatSpeed(gust)}</b><br>`
+  if (current.speed != null) {
+    html += `${t.tipCurrent}&nbsp;: <b>${formatSpeed(current.speed, 1)}</b>`
+    if (current.direction != null) html += ` ${t.tipToward} ${(current.direction * 180 / Math.PI).toFixed(0)}°`
+    html += '<br>'
+  }
   if (temp  != null) html += `${t.tipTemp}&nbsp;: ${formatTemperature(temp)} &nbsp; `
   if (pres  != null) html += `${t.tipPressure}&nbsp;: ${formatPressure(pres)}<br>`
   if (humid != null) html += `${t.tipHumidity}&nbsp;: ${(humid * 100).toFixed(0)}% &nbsp; `
@@ -1606,7 +1676,7 @@ function selectedProviderName() {
 }
 
 function providerLayerAvailability(provider) {
-  const has = { wind: false, gust: false, temp: false, cloud: false, precip: false, press: false }
+  const has = { wind: false, gust: false, current: false, temp: false, cloud: false, precip: false, press: false }
   let scanned = 0
   for (const [key, entry] of memCache) {
     if (!key.startsWith(provider + '|') || Date.now() - entry.ts >= CACHE_TTL) continue
@@ -1614,6 +1684,7 @@ function providerLayerAvailability(provider) {
       for (const f of entry.data) {
         if (f.wind?.speedTrue != null)              has.wind   = true
         if (f.wind?.gust != null)                   has.gust   = true
+        if (currentForForecast(f).speed != null)    has.current = true
         if (f.outside?.temperature != null)         has.temp   = true
         if (f.outside?.cloudCover != null)          has.cloud  = true
         if (f.outside?.precipitationVolume != null) has.precip = true
@@ -1639,10 +1710,15 @@ function providerUnsupportedLayers(provider) {
       for (const f of entry.data) {
         if (!f || typeof f !== 'object') continue
         for (const [group, value] of Object.entries(f)) {
-          if (value == null || group === 'date' || group === 'wind') continue
+          if (value == null || group === 'date' || group === 'wind' || group === 'current' || group === 'currents') continue
           if (group === 'outside' && typeof value === 'object') {
             for (const [field, fieldValue] of Object.entries(value)) {
               if (fieldValue != null && !renderedOutsideFields.has(field)) layers.add(`outside.${field}`)
+            }
+          } else if (group === 'water' && typeof value === 'object') {
+            const renderedWaterFields = new Set(['current', 'surfaceCurrentSpeed', 'surfaceCurrentDirection'])
+            for (const [field, fieldValue] of Object.entries(value)) {
+              if (fieldValue != null && !renderedWaterFields.has(field)) layers.add(`water.${field}`)
             }
           } else {
             layers.add(group)
@@ -1716,7 +1792,7 @@ function renderProviderInfo() {
   if (!provider) return
   const has = providerLayerAvailability(provider)
   const layerLabels = {
-    wind: t.layerWind, gust: t.layerGust, temp: t.layerTemp,
+    wind: t.layerWind, gust: t.layerGust, current: t.layerCurrent, temp: t.layerTemp,
     cloud: t.layerCloud, precip: t.layerPrecip, press: t.layerPress,
   }
   const available = Object.entries(has).filter(([, value]) => value).map(([key]) => layerLabels[key])
@@ -1968,6 +2044,8 @@ function updateLegend() {
     el.innerHTML = `<b>${t.legendWind}</b>${windGradientHtml()}${t.windDesc}<br><span style="font-size:10px;color:#888">${t.barbDesc}</span>`
   } else if (currentLayer === 'gust') {
     el.innerHTML = `<b>${t.legendGust}</b>${windGradientHtml()}${t.gustDesc}<br><span style="font-size:10px;color:#888">${t.barbDesc}</span>`
+  } else if (currentLayer === 'current') {
+    el.innerHTML = `<b>${t.legendCurrent} (${displayUnits.speed})</b>${currentGradientHtml()}${t.currentDesc}`
   } else if (currentLayer === 'temp') {
     el.innerHTML = `<b>${t.legendTemp} (${displayUnits.temperature})</b>${t.tempDesc}`
   } else if (currentLayer === 'cloud') {

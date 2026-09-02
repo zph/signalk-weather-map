@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Surface-current speed and set rendering for providers that expose standard Signal K current fields
+- Current interpolation, tooltips, unit-aware labels, and provider capability reporting
+
+### Changed
+- Point requests now ask providers for up to 240 forecast steps, which supports a seven-to-ten-day timeline when the provider offers it
+
 ## [0.3.0] — 2026-08-28
 
 ### Added
