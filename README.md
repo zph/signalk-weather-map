@@ -2,6 +2,49 @@
 
 A [SignalK](https://signalk.org) webapp that displays forecast data on an interactive map, including wind barbs, surface-current vectors, temperature, cloudiness, precipitation, pressure, and gusts, powered by any compatible Signal K weather provider.
 
+<details>
+<summary><strong>How this fork differs from upstream</strong></summary>
+
+This repository is a fork of Jean-Laurent Girod's
+[signalk-weather-map](https://github.com/macjl/signalk-weather-map). Thank you to Jean-Laurent and
+the upstream contributors for the original lightweight weather map and Signal K integration.
+
+I am happy to upstream changes that prove useful beyond this fork. I have been iterating here first
+to learn which ideas hold up and what shape makes sense before proposing them upstream.
+
+This inventory compares the fork with
+[`upstream/main` at `3e296bb`](https://github.com/macjl/signalk-weather-map/commit/3e296bbfd08276dcf18928a8494ee4b3e5b7c96f).
+The fork changes began after
+[`c8e9c15`](https://github.com/macjl/signalk-weather-map/commit/c8e9c152fee91dc875e00e18b444191b5fce0704),
+and upstream has continued to advance independently.
+
+## Major features and changes
+
+| Difference | Commits |
+| --- | --- |
+| Surface-current forecasts add speed coloring, set-direction arrows, timeline playback, legend values, and tooltip readouts | `f97d03c` |
+| Forecasts follow Signal K unit preferences and can play across every returned forecast step | `51228d2` |
+| GRIB-backed providers are preferred when available, while partial grids remain usable during progressive loading | `295dc59` |
+
+## UI improvements
+
+| Difference | Commits |
+| --- | --- |
+| Forecast playback interpolates between model steps instead of jumping from frame to frame | `82d796c` |
+| The forecast timeline is directly seekable across the full returned horizon | `05253b2` |
+| Progressive color refinement shows a useful map quickly and sharpens it as background data arrives | `265ebeb` |
+
+## Performance optimizations
+
+| Difference | Commits |
+| --- | --- |
+| Rendering work is bounded, future frames are deferred, and forecast-step and heatmap derivations are memoized | `8514513`, `9dbbc73`, `d76f5e7` |
+| Forecast grids are served from a server cache, and browser requests are batched instead of fanning out into hundreds of point requests | `7a7d34b`, `8514513` |
+| Heatmap rendering is profiled and streamlined with structured server and browser timing diagnostics | `6bef86e`, `3121698` |
+| Current forecasts stream before background hydration, and map frames use compact payloads with progressive refinement | `862cb46`, `265ebeb` |
+
+</details>
+
 ![Weather Map screenshot](screenshots/weather-map.png)
 
 ## Features
